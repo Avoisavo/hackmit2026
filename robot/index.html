@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Go2 Control</title>
+<style>
+  body {
+    font: 16px system-ui;
+    background: #10141c;
+    color: #edf2ff;
+    max-width: 760px;
+    margin: 40px auto;
+    padding: 20px;
+  }
+  button {
+    padding: 14px;
+    margin: 4px;
+    border: 0;
+    border-radius: 10px;
+    background: #29364d;
+    color: white;
+    cursor: pointer;
+    touch-action: none;
+  }
+  button:active { background: #456ba4; }
+  button.risky { background: #5a3a1e; }
+  #stop { background: #b42335; width: 100%; font-size: 22px; }
+  #arm.on { background: #1f7a3a; }
+  #hint { color: #ffd166; min-height: 1.4em; }
+  #error { color: #ff8a8a; white-space: pre-wrap; }
+  #cam {
+    display: block;
+    width: 100%;
+    min-height: 120px;
+    border-radius: 10px;
+    background: #000;
+  }
+  .pad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    margin: 20px 0;
+  }
+  .pad button {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .panel { background: #192130; padding: 18px; border-radius: 14px; margin-bottom: 14px; }
+  .panel h2 { font-size: 16px; margin: 0 0 8px; }
+  .panel p.small { font-size: 14px; color: #a9b4c8; margin: 6px 0; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  input { width: 100%; }
+</style>
+
+<h1>Go2 Control</h1>
+<p id="status">Loading…</p>
+<p id="hint">Order: Connect robot → Stand up → Balance stand → Enable movement.</p>
+<p id="error"></p>
+
+<div class="panel">
+  <h2>Camera</h2>
+  <img id="cam" alt="Camera appears after Connect">
+  <p class="small">Motion mode: <b id="modeName">unknown</b>
+    <button onclick="mode('normal')">Switch to Normal</button>
+    <button onclick="mode('ai')">Switch to AI</button>
+    · switch modes while the robot is lying down; it takes a few seconds.
+  </p>
+</div>
+
+<div class="panel">
+  <button onclick="api('/connect')">Connect robot</button>
+  <button onclick="api('/disconnect')">Disconnect</button>
+  <button onclick="posture('stand')">Stand up</button>
+  <button onclick="posture('balance')">Balance stand</button>
+  <button onclick="posture('lie')">Lie down</button>
+  <button id="arm" onclick="arm()">Enable movement</button>
+
+  <p>Joystick strength: <span id="strength">0.10</span></p>
+  <input id="speed" type="range" min="0.05" max="0.30"
+         step="0.05" value="0.10">
+
+  <div class="pad">
+    <button data-direction="left">Q · Strafe left</button>
+    <button data-direction="forward">W · Forward</button>
+    <button data-direction="right">E · Strafe right</button>
+    <button data-direction="turnLeft">A · Turn left</button>
+    <button data-direction="backward">S · Backward</button>
+    <button data-direction="turnRight">D · Turn right</button>
+  </div>
+
+  <button id="stop" onclick="halt('STOP pressed')">STOP / DISARM · Space</button>
+  <p>Hold a button or key to move. Release to send zero input.
+     Any stop, posture button, trick, tab switch or loss of window focus
+     disarms; click Enable movement again to resume.</p>
+</div>
+
+<div class="panel">
+  <h2>Tricks</h2>
+  <p class="small">Robot must be standing. Every trick disarms driving first.
+    Orange ones need at least 2 m of clear, flat space and ask for confirmation.</p>
+  <button onclick="action('hello')">Hello</button>
+  <button onclick="action('stretch')">Stretch</button>
+  <button onclick="action('heart')">Heart</button>
+  <button onclick="action('content')">Content</button>
+  <button onclick="action('scrape')">Scrape</button>
+  <button onclick="action('wiggle_hips')">Wiggle hips</button>
+  <button onclick="action('sit')">Sit</button>
+  <button onclick="action('rise_sit')">Rise from sit</button>
+  <button onclick="action('dance1')">Dance 1</button>
+  <button onclick="action('dance2')">Dance 2</button>
+  <button onclick="action('recovery')">Recovery stand</button>
+  <br>
+  <button class="risky" onclick="action('hind_stand', true)">Stand on hind legs</button>
+  <button class="risky" onclick="action('handstand', true)">Handstand</button>
+  <button class="risky" onclick="action('front_jump', true)">Jump forward</button>
+  <button class="risky" onclick="action('front_pounce', true)">Pounce</button>
+  <button class="risky" onclick="action('front_flip', true)">Front flip</button>
+  <button class="risky" onclick="action('back_flip', true)">Back flip</button>
+  <button class="risky" onclick="action('left_flip', true)">Left flip</button>
+  <button class="risky" onclick="action('right_flip', true)">Right flip</button>
+  <button class="risky" onclick="action('damp', true)">Damp (go limp)</button>
+</div>
+
+<pre id="result"></pre>
+
+<script>
+const token = "__TOKEN__";
+const result = document.querySelector("#result");
+const hint = document.querySelector("#hint");
+const errorBox = document.querySelector("#error");
+const armButton = document.querySelector("#arm");
+const cam = document.querySelector("#cam");
+const modeName = document.querySelector("#modeName");
+const held = new Set();
+// Physical key positions, so the printed W/A/S/D/Q/E labels hold on any layout.
+const keyMap = {
+  KeyW: "forward", KeyS: "backward", KeyQ: "left", KeyE: "right",
+  KeyA: "turnLeft", KeyD: "turnRight"
+};
+const DISARMED_HINT =
+  'Movement is disabled. Click "Enable movement" (robot must be in Balance stand), then hold a key or button.';
+let enabled = false;
+let armEpoch = 0;   // bumps on every arm() so a stale status poll cannot undo it
+let camConnected = false;
+let socket = new WebSocket(
+  `ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`
+);
+
+function note(message) {
+  hint.textContent = message;
+}
+
+function setEnabled(value) {
+  enabled = value;
+  if (!value) held.clear();
+  armButton.classList.toggle("on", value);
+}
+
+async function api(path) {
+  result.textContent = `${path} … working`;
+  try {
+    const response = await fetch("/api" + path, {
+      method: "POST",
+      headers: {"X-Control-Token": token}
+    });
+    const body = await response.json();
+    result.textContent = JSON.stringify(body, null, 2);
+    return response.ok;
+  } catch (error) {
+    setEnabled(false);
+    result.textContent = error.message;
+    return false;
+  }
+}
+
+function transmit(message) {
+  if (socket.readyState === WebSocket.OPEN)
+    socket.send(JSON.stringify(message));
+}
+
+function halt(reason) {
+  setEnabled(false);
+  transmit({type: "stop"});
+  api("/stop");
+  note(`Disarmed (${reason}). Click "Enable movement" to drive again.`);
+}
+
+async function arm() {
+  held.clear();
+  armEpoch++;
+  const ok = await api("/arm");
+  setEnabled(ok);
+  note(ok
+    ? "Movement enabled. Hold W/S, Q/E, A/D or a button. Space stops."
+    : "Could not enable movement: connect the robot first and keep this page open.");
+}
+
+function posture(name) {
+  halt("posture command");
+  api("/posture/" + name);
+}
+
+function action(name, risky) {
+  if (risky && !confirm(
+    `Run "${name.replace("_", " ")}"? Make sure there is clear, flat space around the robot.`
+  )) return;
+  halt("trick");
+  api("/action/" + name);
+}
+
+function mode(name) {
+  halt("mode switch");
+  note(`Switching motion mode to ${name}; this takes a few seconds…`);
+  api("/mode/" + name);
+}
+
+function showCamera(on) {
+  camConnected = on;
+  cam.src = on
+    ? `/camera.mjpeg?token=${encodeURIComponent(token)}&t=${Date.now()}`
+    : "";
+}
+cam.onerror = () => {
+  if (camConnected) setTimeout(() => { if (camConnected) showCamera(true); }, 2000);
+};
+
+socket.onclose = event => {
+  setEnabled(false);
+  note(event.reason
+    ? `Dashboard connection closed: ${event.reason}. Reload to reconnect.`
+    : "Dashboard connection lost. Reload to reconnect.");
+};
+
+document.querySelector("#speed").oninput = event => {
+  document.querySelector("#strength").textContent =
+    Number(event.target.value).toFixed(2);
+};
+
+document.querySelectorAll("[data-direction]").forEach(button => {
+  button.onpointerdown = event => {
+    // Only the primary button drives; a right-click or two-finger tap opens
+    // a native menu that would swallow the release.
+    if (event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    if (!enabled) { note(DISARMED_HINT); return; }
+    button.setPointerCapture(event.pointerId);
+    held.add(button.dataset.direction);
+  };
+  button.oncontextmenu = event => event.preventDefault();
+  const release = () => held.delete(button.dataset.direction);
+  button.onpointerup = release;
+  button.onpointercancel = release;
+  button.onlostpointercapture = release;
+});
+
+window.addEventListener("keydown", event => {
+  if (event.code === "Space") {
+    event.preventDefault();
+    halt("STOP pressed");
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const direction = keyMap[event.code];
+  if (!direction) return;
+  if (!enabled) { note(DISARMED_HINT); return; }
+  event.preventDefault();
+  held.add(direction);
+});
+window.addEventListener("keyup", event => {
+  // macOS drops the keyup of a letter released while Cmd is held, so a
+  // modifier release clears everything rather than trusting per-key pairs.
+  if (["Meta", "Control", "Alt"].includes(event.key)) { held.clear(); return; }
+  held.delete(keyMap[event.code]);
+});
+window.addEventListener("blur", () => halt("window lost focus"));
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) halt("tab hidden");
+});
+
+setInterval(() => {
+  const speed = Number(document.querySelector("#speed").value);
+  const axis = (positive, negative) =>
+    enabled ? speed * (Number(held.has(positive)) - Number(held.has(negative))) : 0;
+  transmit({
+    type: "move",
+    forward: axis("forward", "backward"),
+    left: axis("left", "right"),
+    turn: axis("turnLeft", "turnRight")
+  });
+}, 100);
+
+setInterval(async () => {
+  const epoch = armEpoch;
+  try {
+    const response = await fetch("/api/status", {
+      headers: {"X-Control-Token": token},
+      signal: AbortSignal.timeout(3000)
+    });
+    if (response.status === 403) {
+      setEnabled(false);
+      note("The server was restarted and this page holds the old session token. Reload this page.");
+      return;
+    }
+    const state = await response.json();
+    if (!("mode" in state)) {
+      note("The server is running an older app.py: stop uvicorn (Ctrl+C), start it again, then reload this page.");
+      return;
+    }
+    document.querySelector("#status").textContent =
+      `${state.ip} · ${state.connected ? "Connected" : "Disconnected"} · ` +
+      `${state.armed ? "Movement enabled" : "Disarmed"}` +
+      `${state.busy ? " · Busy" : ""}` +
+      `${state.connected ? (state.camera ? " · Camera live" : " · Camera starting") : ""}`;
+    modeName.textContent = state.mode || "unknown";
+    if (state.connected !== camConnected) showCamera(state.connected);
+    // Ignore a poll that started before the latest arm() completed.
+    if (!state.armed && epoch === armEpoch && enabled) {
+      setEnabled(false);
+      note('The server disarmed movement (heartbeat gap or stop). Click "Enable movement" to resume.');
+    }
+    errorBox.textContent = state.error || "";
+  } catch {
+    halt("dashboard unreachable");
+  }
+}, 1000);
+</script>
+</html>
