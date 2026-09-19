@@ -1,51 +1,63 @@
 const API_ORIGIN = "https://api.elevenlabs.io";
 
 /**
- * Mints a short-lived WebRTC conversation token for the configured agent.
+ * Issues the credential the browser needs to open a conversation.
  *
- * This keeps ELEVENLABS_API_KEY on the server. It is only required when the
- * agent has authentication enabled in the ElevenLabs dashboard; a public agent
- * connects straight from the browser with just the agent id.
+ * `?mode=webrtc` (default) mints a short-lived conversation token.
+ * `?mode=websocket` returns a signed URL instead, which is the more forgiving
+ * transport on restrictive networks where UDP media flows are dropped.
+ *
+ * Either way ELEVENLABS_API_KEY stays on the server.
  */
-export async function GET() {
+export async function GET(request: Request) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const agentId = process.env.ELEVENLABS_AGENT_ID;
 
-  if (!agentId) {
+  if (!agentId || !apiKey) {
     return Response.json(
-      { error: "ELEVENLABS_AGENT_ID is not set in .env.local" },
+      {
+        error: `Missing ${!agentId ? "ELEVENLABS_AGENT_ID" : "ELEVENLABS_API_KEY"} in .env.local`,
+      },
       { status: 500 }
     );
   }
 
-  if (!apiKey) {
-    return Response.json(
-      { error: "ELEVENLABS_API_KEY is not set in .env.local" },
-      { status: 500 }
-    );
-  }
+  const mode =
+    new URL(request.url).searchParams.get("mode") === "websocket"
+      ? "websocket"
+      : "webrtc";
 
-  const response = await fetch(
-    `${API_ORIGIN}/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`,
-    { headers: { "xi-api-key": apiKey }, cache: "no-store" }
-  );
+  const endpoint =
+    mode === "websocket"
+      ? `${API_ORIGIN}/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`
+      : `${API_ORIGIN}/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`;
+
+  const response = await fetch(endpoint, {
+    headers: { "xi-api-key": apiKey },
+    cache: "no-store",
+  });
 
   if (!response.ok) {
-    const detail = await response.text();
     return Response.json(
-      { error: `ElevenLabs returned ${response.status}: ${detail}` },
+      { error: `ElevenLabs returned ${response.status}: ${await response.text()}` },
       { status: response.status }
     );
   }
 
-  const data = (await response.json()) as { token?: string };
+  const data = (await response.json()) as {
+    token?: string;
+    signed_url?: string;
+  };
 
-  if (!data.token) {
-    return Response.json(
-      { error: "ElevenLabs did not return a conversation token" },
-      { status: 502 }
-    );
+  if (mode === "websocket") {
+    if (!data.signed_url) {
+      return Response.json({ error: "No signed URL returned" }, { status: 502 });
+    }
+    return Response.json({ signedUrl: data.signed_url });
   }
 
+  if (!data.token) {
+    return Response.json({ error: "No conversation token returned" }, { status: 502 });
+  }
   return Response.json({ token: data.token });
 }
