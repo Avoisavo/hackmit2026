@@ -5,7 +5,7 @@ const vm = require('node:vm');
 let draws = 0;
 const context = new Proxy({}, {
   get(_, key) {
-    if (key === 'createRadialGradient') return () => ({ addColorStop() {} });
+    if (key === 'createRadialGradient' || key === 'createLinearGradient') return () => ({ addColorStop() {} });
     return (...args) => {
       for (const value of args) if (typeof value === 'number') assert.ok(Number.isFinite(value), `${key}: non-finite drawing argument`);
       if (key === 'drawImage') draws++;
@@ -17,9 +17,9 @@ const canvas = () => ({ width: 1000, height: 600, clientWidth: 1000, clientHeigh
 const sandbox = { document: { createElement: canvas }, performance, requestAnimationFrame: () => 1, cancelAnimationFrame() {} };
 sandbox.window = { devicePixelRatio: 1, matchMedia: () => ({ matches: false }) };
 vm.createContext(sandbox);
-for (const file of ['web/face.js', 'web/expressive.js']) vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox);
-const { Face, ExpressiveFace } = sandbox.window;
-for (const Renderer of [Face, ExpressiveFace]) {
+for (const file of ['web/face.js', 'web/expressive.js', 'web/rabbit.js']) vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox);
+const { Face, ExpressiveFace, RabbitFace } = sandbox.window;
+for (const Renderer of [Face, ExpressiveFace, RabbitFace]) {
   const face = new Renderer(canvas());
   for (const name of Face.NAMES) {
     assert.equal(face.setEmote(name, 0), true);
@@ -42,7 +42,7 @@ for (const Renderer of [Face, ExpressiveFace]) {
   face.setEmote('sad', 0);
   for (let i = 0; i < 4000; i++) face._step(.02);
   assert.equal(face.name, 'sad', 'indefinite hold preserves mood');
-  if (Renderer === ExpressiveFace) assert.equal(face.sleepy, 0, 'explicit mood does not drift into sleep');
+  if (Renderer !== Face) assert.equal(face.sleepy, 0, 'explicit mood does not drift into sleep');
 }
 const face = new ExpressiveFace(canvas(), { reducedMotion: true });
 face.setEmote('excited', 0);
@@ -58,3 +58,23 @@ assert.equal(face.attention, null);
 face.renderStill();
 assert.ok(draws > 4000);
 console.log('PASS: ten moods, interrupted transitions, finite drawing geometry, hold expiry, sustained moods, reduced motion, and attention bounds.');
+
+const rabbit = new RabbitFace(canvas(), { reducedMotion: true });
+rabbit.setEmote('excited', 0);
+assert.equal(rabbit.t, 1);
+const stillPose = JSON.stringify(rabbit._modulate(rabbit.to.l, 0));
+rabbit._step(.05);
+assert.equal(JSON.stringify(rabbit._modulate(rabbit.to.l, 0)), stillPose);
+for (const [width, height] of [[1024,600],[800,480],[320,240],[600,1000]]) {
+  rabbit.canvas.clientWidth = width; rabbit.canvas.clientHeight = height;
+  for (const name of Face.NAMES) { rabbit.setEmote(name, 0); rabbit.renderStill(); }
+}
+rabbit.setEmote('happy', 0); rabbit.reducedMotion = false; rabbit._step(.08);
+const accents = rabbit._features(); rabbit.setEmote('sad', 0);
+assert.deepEqual(rabbit._features(), accents, 'ear and mouth transitions are continuous');
+console.log('PASS: rabbit reduced motion, four display sizes, and interrupted ear/mouth transitions.');
+
+for (const [alias, mood] of Object.entries({Ready:'neutral', Watching:'curious', Encourage:'happy', Thinking:'curious', Go:'excited', Celebrate:'love', Rest:'sleepy', 'Soft confused':'surprised'})) {
+  assert.equal(rabbit.setEmote(alias, .2), true); assert.equal(rabbit.name, mood);
+}
+console.log('PASS: all eight existing controller names map to rabbit emotions.');

@@ -32,7 +32,7 @@ LEGACY_EMOTES = [
 ]
 
 EMOTES = ["Ready", "Watching", "Encourage", "Thinking", "Go", "Celebrate", "Rest", "Soft confused"]
-VERSION = "twinkle-v2-glossy"
+VERSION = "rabbit-v1-glossy"
 
 MIME = {
     ".html": "text/html; charset=utf-8",
@@ -147,9 +147,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         p = u.path
 
-        if p in ("/", "/twinkle"):
+        if p == "/twinkle":
             return self._static("twinkle-panel.html")
-        if p == "/classic":
+        if p in ("/", "/rabbit", "/classic"):
             return self._static("index.html")
         if p == "/dashboard":
             return self._static("dashboard.html")

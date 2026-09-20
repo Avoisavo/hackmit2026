@@ -1,3 +1,62 @@
+# Rabbit emotion display
+
+The default display now uses the warm white rabbit design: floating eyes,
+pink inner ears, natural blue irises and dark pupils, a pink nose, soft blush,
+and the lowered mouth with two ivory front teeth. The neon treatment has been removed.
+The renderer is procedural Canvas 2D, inspired by the approved concept;
+it is not a pre-rendered 3D image. No additional dependencies are needed.
+
+## Run the rabbit
+
+```sh
+python3 server.py
+```
+
+- Face: http://localhost:8080/?bare=1
+- Ten-emotion gallery: http://localhost:8080/rabbit-gallery.html
+- Still preview: http://localhost:8080/?emote=happy&link=0&still=1
+- Original design: http://localhost:8080/?design=original
+
+Press 1–9 and 0 for the ten moods, tap the face to cycle, and press F for
+fullscreen. The existing `/emote` HTTP API and hold durations still work. Twinkle controller
+names are mapped to rabbit moods (Ready→neutral, Watching/Thinking→curious,
+Encourage→happy, Go→excited, Celebrate→love, Rest→sleepy, Soft confused→surprised).
+The old Twinkle panel remains available at `/twinkle`.
+The gallery has a motion toggle; reduced-motion preferences are respected.
+
+| Mood | Rabbit expression |
+| --- | --- |
+| neutral | Open glossy eyes, relaxed floppy ears, small bunny smile |
+| happy | Raised lower lids, brighter cheeks, wider smile |
+| excited | Larger eyes, bouncing motion, perked ears, open smile |
+| curious | Uneven eyes, one tilted ear, inquisitive head motion |
+| sad | Inner eye corners lifted, drooping ears, subdued cheeks |
+| sleepy | Heavy lids, relaxed ears, slow breathing |
+| surprised | Tall wide-open eyes, raised ears, rounded open mouth |
+| angry | Inward slanted lids, tense ears, tight mouth |
+| love | Warm white heart-shaped eyes, blushing cheeks, gentle sway |
+| boot | Dim ears and mouth, slim illuminated eye slits |
+
+## Code and checks
+
+`web/rabbit.js` contains the new renderer, pose parameters, ear shapes,
+soft material shading, mouth and teeth. It extends `web/expressive.js` and uses
+`web/face.js` for the animation and control contract. `web/app.js` selects
+the rabbit by default, and `web/index.html` loads it.
+
+```sh
+node tools/verify-face.cjs
+node tools/verify-twinkle.cjs
+```
+
+Desktop browser appearance has been checked. Actual frame rate and brightness
+on the UNO Q / physical LCD still need a hardware check. The existing Next.js
+scaffold is separate from this Python-served display.
+
+---
+
+## Previous project documentation
+
 # robot dog face
 
 Animated vector eyes for a robot dog, on an Arduino UNO Q driving a 7" HDMI

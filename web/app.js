@@ -6,9 +6,9 @@
   var params = new URLSearchParams(location.search);
   var canvas = document.getElementById('face');
 
-  var Renderer = params.get('design') === 'expressive' ? ExpressiveFace : Face;
+  var Renderer = params.get('design') === 'original' ? Face : params.get('design') === 'expressive' ? ExpressiveFace : RabbitFace;
   var face = new Renderer(canvas, {
-    color: params.get('color') || Face.DEFAULT_COLOR,
+    color: params.get('color') || (Renderer === RabbitFace ? '#39cfff' : Face.DEFAULT_COLOR),
     idle: params.get('idle') !== '0',
     energy: params.has('energy') ? Math.max(0, Math.min(1, Number(params.get('energy')) || 0)) : .65
   });
