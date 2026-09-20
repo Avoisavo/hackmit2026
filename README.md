@@ -86,6 +86,7 @@ page, not in the two-minute pitch.
 ## The three demo cases
 
 Full script, with the face cue for every beat, is in **[DEMO.md](DEMO.md)**.
+Slides and what to say are in **[PITCH.md](PITCH.md)**.
 
 | # | Case | What it proves | Time |
 |---|---|---|---|
