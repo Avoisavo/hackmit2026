@@ -55,6 +55,244 @@ scaffold is separate from this Python-served display.
 
 ---
 
+# Demo day: problems and fixes
+
+Every problem below happened on this hardware. Each one has the symptom you see,
+the real cause, and the fix. Read the first table before the demo.
+
+## Check these first, in this order
+
+| # | Check | Command | Good answer |
+|---|---|---|---|
+| 1 | The dongle has its own power | look at it | a power brick is plugged into the dongle |
+| 2 | The board answers | `curl http://127.0.0.1:8080/health` | `"version": "rabbit-v1-glossy"` |
+| 3 | A browser is connected | same command | `"faces": 1` |
+| 4 | One watcher holds the lock | `sh deploy/face.sh shell` then `cat /tmp/display-watch.lock/pid` | one pid, and it is alive |
+
+**`faces` is the number that matters.** It counts connected browsers. If it is
+more than 1, faces will stack. See "The screen flashes" below.
+
+### Do not count processes with a bare `pgrep`
+
+`pgrep -f` matches the command line of the shell running it, so
+`pgrep -f -- "--kiosk" | wc -l` reports 2 on a healthy board with one browser.
+Bracket patterns like `[-]-kiosk` do not help — the bracketed text still
+contains the string being searched for.
+
+Count by executable instead:
+
+```sh
+c=0
+for p in $(pgrep -f -- "[-]-kiosk" 2>/dev/null); do
+  readlink /proc/$p/exe 2>/dev/null | grep -q chromium && c=$((c+1))
+done
+echo "$c"        # want 1
+```
+
+The same trap bites `pkill`. See "A command kills my own session" below.
+
+---
+
+## The screen
+
+### The screen is black, or the rabbit looks black
+
+**Cause.** The fur background is a large offscreen canvas with thousands of
+stroked hairs. The board's GPU can refuse to build it. The dark page colour then
+shows through.
+
+**Fixed in `web/rabbit.js`.** A solid warm colour now paints before the fur, so
+the panel can never be black. The fur build is wrapped in `try`/`catch` and gives
+up once instead of retrying every frame. Hair count is capped at 12000, down
+from 28000.
+
+### Faces stack on top of each other
+
+**Cause.** The renderer did not clear the canvas between frames. Every new face
+painted over the last one.
+
+**Fixed in `web/rabbit.js`.** `_draw` now resets transform, alpha, composite
+mode, shadow and filter, then clears, before painting.
+
+**If it comes back**, you have more than one browser. Check `faces` in `/health`.
+One browser means one face.
+
+### The screen flashes: black, face, black, repeating
+
+**Cause.** Two copies of `display-watch.sh` were running. Each launched a browser
+and killed the other's, forever. The connected-client count reached nine.
+
+**Fixed in `deploy/display-watch.sh`.** The lock is now an atomic `mkdir`. A
+plain pid file was not enough, because deleting it while a watcher was alive let
+a second one start.
+
+**To recover by hand:**
+
+```sh
+sh deploy/face.sh shell
+P=$(pgrep -f "[d]isplay-watch.sh"); [ -n "$P" ] && kill -9 $P
+rm -rf /tmp/display-watch.lock
+cd ~/robotdog-face/deploy && nohup setsid env DISPLAY=:0 \
+  XAUTHORITY=$HOME/.Xauthority PORT=8080 ./display-watch.sh >/tmp/dw.log 2>&1 &
+```
+
+### The Arduino App Lab keeps appearing and disappearing
+
+**Cause.** `pkill -f chromium` also killed the Arduino App Lab, and the board
+restarts it. That produced a second flashing loop on top of the first.
+
+**Fixed in `deploy/display-watch.sh`.** It now kills only processes carrying
+`--kiosk`. App Lab is never touched.
+
+### The screen stays dark after plugging in the panel
+
+**Cause.** X starts before the USB-C dongle is detected, so the browser painted
+onto a screen that was not there.
+
+**Fixed in `deploy/display-watch.sh`.** It waits for an output to become
+connected, sets its mode, then launches the face onto it. Check the log:
+
+```sh
+sh deploy/face.sh shell
+tail /tmp/dw.log      # want: display connected: DP-1 / face launched on DP-1
+```
+
+If the panel needs a forced mode, `deploy/DISPLAY.md` has the `xrandr` lines.
+
+---
+
+## The board
+
+### The board reboots over and over
+
+**This is the most important one. It is power, not software.**
+
+**Cause.** The board has one USB-C port and draws its power through it. Video
+goes out through a USB-C DisplayPort dongle. If that dongle has no power supply
+of its own, the board browns out under load and restarts. A bigger screen makes
+it worse.
+
+**Fix.** Plug a 5 V 3 A or better USB-C supply into the **dongle's own power
+input**, before you connect the board.
+
+**How to tell.** `uptime` keeps showing `0 min`, and SSH commands time out
+part-way through.
+
+### Files vanish after a deploy, or come back empty
+
+**Cause.** The board keeps writes in memory. If it reboots or browns out before
+they reach disk, they are lost. `adb push` still reports success. A backup made
+on the board with `cp -r` was destroyed the same way — every file 0 bytes.
+
+**Fix.** Always finish a deploy with `sync`, then prove it:
+
+```sh
+adb shell 'sync; sync'
+adb shell 'find /home/arduino/robotdog-face -type f -size 0 | wc -l'   # want 0
+```
+
+`deploy/face.sh deploy` and `deploy/push-face.sh` already do this and refuse to
+continue if any file landed empty. Never trust an on-board `cp -r` as a backup —
+rebuild it from git instead.
+
+---
+
+## Reaching the board
+
+### My laptop cannot reach the board, even on the same Wi-Fi
+
+**Cause.** A phone hotspot isolates its clients. Measured on this setup:
+
+| From | To | Result |
+|---|---|---|
+| laptop | phone | works |
+| board | phone | works |
+| **board** | **laptop** | **works** |
+| **laptop** | **board** | **blocked** |
+
+The board's ports are already open on `0.0.0.0`. Nothing is firewalled on the
+board. The phone drops the packets. No app on either machine changes this.
+
+**Fix.** The board dials out instead. `deploy/reverse-tunnel.sh` forwards the
+board's own ports back to each listed laptop:
+
+```
+laptop:2222 -> board:2222   ssh
+laptop:8080 -> board:8080   face server and /emote
+```
+
+Then every laptop uses `BOARD=127.0.0.1`.
+
+**A better fix if you can.** An iPhone Personal Hotspot does not isolate clients.
+On one of those, no tunnel is needed and everyone uses the board's real IP.
+
+### `adb tcpip` does nothing
+
+**Cause.** This board's `adbd` is a Debian package wired to the USB gadget. It
+cannot listen on TCP. Changing that needs root.
+
+**Fix.** Use SSH instead. See below.
+
+### `ssh arduino@<board>.local` asks for a password nobody knows
+
+**Cause.** The system ssh service is disabled, and enabling it needs the password
+set during the board's first setup. `sudo` needs that same password.
+
+**Fix.** The board runs **its own sshd as the `arduino` user on port 2222**. No
+root needed. `deploy/kiosk.sh` starts it at login, so it survives a reboot. Keys
+only; passwords and root login are off. Set it up with
+`sh deploy/wireless-setup.sh` while the cable is in.
+
+If you ever learn the first-setup password, you can switch to the proper system
+service with `arduino-app-cli system network-mode enable`.
+
+### SSH connects, then "Connection reset by peer"
+
+**Cause.** The tunnel sometimes binds IPv6 only.
+
+**Fix.** Use `::1` instead of `127.0.0.1`:
+
+```sh
+ssh -p 2222 arduino@::1
+```
+
+### The face server dies right after I restart it over SSH
+
+**Cause.** `setsid python3 server.py &` alone is not enough. `sshd` kills the new
+process when the command returns, and the panel goes dark.
+
+**Fix.** Use `nohup` **and** `setsid`, redirect every stream, and wait for
+`/health` before the SSH session exits. `deploy/face.sh restart` does this. Do
+not simplify that line.
+
+### A command kills my own session, exit code 143
+
+**Cause.** `pkill -f <pattern>` matches the shell running it, because the command
+line contains the path you are killing.
+
+**Fix.** Use a bracket pattern, and put the kill in a separate call:
+
+```sh
+adb shell 'pkill -f "[r]everse-tunnel"'      # one call
+adb shell 'cd ... && nohup setsid ./reverse-tunnel.sh &'   # the next call
+```
+
+---
+
+## Quick fixes during the demo
+
+| Problem | Do this |
+|---|---|
+| Face frozen or wrong | `sh deploy/face.sh emote Ready` |
+| Screen black | `sh deploy/face.sh restart` |
+| Faces stacking | check `faces` in `/health`; kill extra watchers |
+| Board unreachable | check the dongle's power first, then the tunnel |
+| Nothing works | run the demo from the slide clips; the three lines in `DEMO.md` carry the pitch |
+
+The full demo script is in `DEMO.md`. Board and deploy notes are in `HANDOFF.md`.
+
+---
+
 ## Previous project documentation
 
 # robot dog face
