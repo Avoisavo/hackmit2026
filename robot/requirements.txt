@@ -15,3 +15,4 @@ av==17.1.0                  # video frames from the WebRTC track
 pillow==12.3.0              # JPEG encoding for the camera stream
 requests==2.34.2            # LAN signaling handshake (bounded in app.py)
 cryptography==50.0.1
+python-dotenv==1.2.3        # uvicorn --env-file for local provider settings

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Buddy · Control plane</title><link rel="stylesheet" href="/plane-assets/plane.css">
+<body data-token="__TOKEN__"><main>
+<header><div><p class="eyebrow">BUDDY / GO2 AIR + AUDIO · V3</p><h1>Control plane</h1><p class="muted">One activity. Voice, vision, expression, and robot working together.</p></div>
+<div class="row"><a href="/controls">Advanced robot controls</a><button id="stopAll" class="danger">STOP ALL · Space</button></div></header>
+<p id="error" class="error" role="alert"></p>
+<div class="services"><div class="service"><b>GO2 + CAMERA</b><span id="robotHealth">Connecting dashboard…</span></div>
+<div class="service"><b>VOICE</b><span id="voiceHealth">Bluetooth speaker and microphone via Mac</span></div>
+<div class="service"><b>FACE DISPLAY</b><span id="faceHealth">Local preview ready</span></div></div>
+<section class="card tests"><div class="section-title"><div><p class="eyebrow">CHECK EACH COMPONENT</p><h2>Quick tests</h2></div><span class="badge">Sound output: computer / external speaker</span></div>
+<p class="muted">For the speaker test, pair Whammo 2.0 Speaker over Bluetooth and select it in Mac System Settings → Sound → Output. Enable this computer’s speaker below, then play the tone. Test the microphone afterward. The test tone needs no robot connection or API key. Speech needs your ElevenLabs key and voice ID; transcription needs Deepgram.</p>
+<div class="test-grid">
+<div><h3>01 / Sound</h3><button id="localSpeaker" class="primary">Use this computer’s speaker</button><button data-test="tone">Play speaker test tone</button><button data-test="voice">Test ElevenLabs voice</button><p id="speakerStatus" class="muted">Enable a speaker first.</p><p id="speakerMessage" class="muted"></p></div>
+<div><h3>02 / Microphone</h3><button id="localMic">Use this microphone</button><button data-test="microphone">Listen for 20 seconds</button><meter id="micLevel" min="0" max="1" value="0" aria-label="Local microphone level"></meter><p id="micMessage" class="muted">After the speaker works, select Whammo 2.0 Speaker in the browser’s microphone prompt and allow access. Save your Deepgram key before listening. If you change inputs, enable the microphone again.</p></div>
+<div><h3>03 / Camera</h3><button id="testCamera">Analyze blocks now</button><p id="cameraTestResult" class="muted">Uses the current Go2 camera and OpenAI. No movement.</p></div>
+<div><h3>04 / Screen &amp; Arduino</h3><div class="row"><button data-face="Celebrate">Happy face</button><button data-face="Thinking">Thinking face</button><button data-face="Ready">Reset face</button></div><p class="muted">Updates this preview and any paired Arduino display.</p></div>
+</div>
+<p id="testResult" class="test-result" role="status">Choose a component to test.</p><button id="stopTest">Stop test / silence speaker</button>
+<details><summary>Robot movement tests</summary><p class="muted">These buttons move the real robot. Keep space clear. Each step lasts 0.3 seconds at 0.15 joystick input and stops automatically. A fresh camera and this focused tab are required.</p>
+<div class="row"><button data-posture="stand">Stand up</button><button data-posture="balance">Balance stand</button><button data-posture="lie">Lie down</button><button data-trick="hello">Hello / wave</button></div>
+<div class="row"><button data-move="forward">Step forward · 0.3 s</button><button data-move="turn_left">Turn left · 0.3 s</button><button data-move="turn_right">Turn right · 0.3 s</button></div>
+<p id="movementResult" class="muted">Movement is disarmed.</p></details>
+</section>
+<div class="grid"><div>
+<section class="card"><h2>Go2 camera</h2><form id="connectForm" class="row"><input id="robotIp" aria-label="Robot IP" value="__ROBOT_IP__" required><button>Connect robot</button><button id="disconnect" type="button">Disconnect</button></form>
+<p class="muted">Uses the existing Go2 connection. Camera analysis counts toy blocks; joystick driving stays disarmed during this activity.</p><img id="camera" alt="Connect Go2 to see the live camera"></section>
+<section class="card"><div id="activityPhase">Idle</div><h2>Build three together</h2>
+<div class="counts"><div><strong id="goalCount">3</strong><span>Target blocks</span></div><div><strong id="seenCount">—</strong><span>Observed blocks</span></div></div>
+<p id="activityMessage" role="status">Enable a speaker and connect Go2, then start.</p>
+<form id="activityForm"><label>Target blocks <input id="target" type="number" min="1" max="10" value="3"></label>
+<label><input id="wave" type="checkbox"> Add one Go2 Hello gesture when the child succeeds</label>
+<p class="muted">The gesture uses the existing recovery sequence. Enable it only with room for the robot to stand and wave.</p>
+<button id="startActivity" class="primary">Start blocks activity</button></form>
+<details><summary>Operator answer fallback</summary><p class="muted">For checking the flow before a microphone joins. This sends a typed answer to the current question.</p>
+<form id="answerForm" class="row"><input id="answer" maxlength="300" placeholder="Child's answer" aria-label="Typed answer"><button id="sendAnswer">Submit answer</button></form></details></section>
+</div><div>
+<section class="card"><h2>Robot expression</h2><canvas id="facePreview" width="1000" height="600" aria-label="Robot expression preview"></canvas>
+<label>Preview while idle <select id="expression"><option>Ready</option><option>Watching</option><option>Encourage</option><option>Thinking</option><option>Go</option><option>Celebrate</option><option>Rest</option><option>Soft confused</option></select></label>
+<p id="outcome" class="muted">A correct answer and physically placing three blocks are tracked separately.</p></section>
+<section class="card"><h2>Activity log</h2><ul id="events" class="log"></ul></section>
+</div></div>
+<section class="card"><h2>Devices on this server</h2><p class="muted">The Mac plays ElevenLabs audio through its selected output and captures speech from the microphone selected in the browser. You can optionally pair a phone microphone or another speaker player. Arduino opens the face page on its display. Keep this operator tab focused during the activity.</p>
+<label>Server address for other devices <input id="deviceOrigin" type="url" placeholder="https://your-server-name:8020"></label>
+<p class="muted">Use a trusted HTTPS address reachable from the phone. localhost links work only on this computer. Pairing a role replaces its old link.</p>
+<div class="pair-row"><div class="row"><button data-pair="mic">Pair phone microphone</button></div><input id="micLink" readonly aria-label="Microphone pairing link"></div>
+<div class="pair-row"><button data-pair="speaker">Pair another speaker player</button><input id="speakerLink" readonly aria-label="Speaker pairing link"><p class="muted">Optional: open this link on the device connected to your speaker, then click Join device.</p></div>
+<div class="pair-row"><button data-pair="face">Pair Arduino / face display</button><input id="faceLink" readonly aria-label="Face pairing link"></div>
+</section>
+<section class="card" id="toolMap"><div class="section-title"><div><p class="eyebrow">AI ACTION REFERENCE</p><h2>Movement tool map</h2></div><button id="downloadTools">Download tool schemas</button></div>
+<p class="muted">These are the same tools used by camera AI. The server validates every call, executes one action at a time, and stops on lost focus or connection. Download JSON for OpenAI's Responses API tools field.</p>
+<div class="table-scroll"><table><thead><tr><th>Tool</th><th>Arguments</th><th>Behavior</th></tr></thead><tbody id="toolsTable"></tbody></table></div>
+<details><summary>Full movement catalogue</summary><p class="muted">The AI column shows what the guarded AI dispatcher accepts. Other actions remain available from Advanced robot controls.</p><div class="table-scroll"><table><thead><tr><th>Movement</th><th>AI tool</th><th>Manual API</th><th>Modes</th></tr></thead><tbody id="movementsTable"></tbody></table></div></details>
+<details><summary>Example tool dispatch</summary><pre id="toolExample"></pre><p class="muted">Send with X-Control-Token from the server. control_id comes from the operator socket; control_epoch from /api/status. Poll /api/ai/status for completion. Never expose credentials to the model.</p></details>
+</section>
+<section class="card"><details open><summary>Provider connections</summary><p id="keyStatus" class="muted">Keys stay in this server's memory. Camera frames go to OpenAI; microphone audio goes to Deepgram; robot speech goes to ElevenLabs.</p>
+<form id="keysForm"><div class="keys"><label>OpenAI API key<input name="openai" type="password" autocomplete="off"></label><label>Deepgram API key<input name="deepgram" type="password" autocomplete="off"></label><label>ElevenLabs API key<input name="elevenlabs" type="password" autocomplete="off"></label><label>ElevenLabs voice ID<input name="voice_id" autocomplete="off"></label></div><button>Save connections</button></form></details></section>
+</main><script src="/plane-assets/twinkle.js"></script><script type="module" src="/plane-assets/operator.js"></script></body></html>

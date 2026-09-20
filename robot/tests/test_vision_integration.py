@@ -52,7 +52,7 @@ class VisionIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
 
     async def test_pages_and_box_stream_reuse_existing_robot_without_motion(self):
-        for route, expected in [("/", "Robot IP"), ("/vision", "Look &amp; Count")]:
+        for route, expected in [("/controls", "Robot IP"), ("/vision", "Look &amp; Count")]:
             response = await self.client.get(route)
             self.assertEqual(response.status_code, 200)
             self.assertIn(expected, response.text)

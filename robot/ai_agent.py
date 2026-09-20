@@ -207,6 +207,7 @@ class CameraAgent:
         self.router.add_api_route("/status", self.status, methods=["GET"])
         self.router.add_api_route("/key", self.key_api, methods=["POST"])
         self.router.add_api_route("/start", self.start_api, methods=["POST"])
+        self.router.add_api_route("/call", self.call_api, methods=["POST"])
 
     @property
     def busy(self):
@@ -274,6 +275,59 @@ class CameraAgent:
         self.message = "Looking at a fresh camera frame…"
         self._task = asyncio.create_task(self._run(self._epoch, context, self.get_key()))
         return self.status()
+
+    async def call_api(self, request: Request):
+        """Execute the same guarded tools without requiring a model request.
+
+        The caller owns the tool loop, never the actuators. It must retain a live
+        operator socket and stop epoch; duplicate IDs never repeat a movement.
+        """
+        data = await self.body(request)
+        run_id, name, args = data.get("run_id"), data.get("name"), data.get("arguments")
+        if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", run_id):
+            raise HTTPException(400, "Provide a unique run_id of 16–80 letters, digits, underscores or hyphens")
+        try:
+            validate_call(name, args)
+        except AgentError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if run_id in self._seen_runs:
+            return {**self.status(), "duplicate": True, "requested_run_id": run_id}
+        if self.busy:
+            raise HTTPException(409, "Another tool or AI run is still active")
+        jpeg, at, _ = self.get_frame()
+        if not jpeg or not 0 <= self.clock() - at < self.CAMERA_MAX_AGE:
+            raise HTTPException(409, "A fresh Go2 camera frame is required for robot tools")
+        context = self.acquire(data.get("control_id"), data.get("control_epoch"))
+        self._seen_runs.append(run_id)
+        self._epoch += 1
+        self.run_id, self.goal = run_id, "Single tool: " + name
+        self.running, self.phase, self.message = True, "acting", args["reason"]
+        self.steps = [{"tool": name, "arguments": args, "result": "Running"}]
+        self._task = asyncio.create_task(self._single_call(self._epoch, context, name, args))
+        return self.status()
+
+    async def _single_call(self, epoch, context, name, args):
+        started = self.clock()
+        def check(**kwargs):
+            self.check(epoch, context)
+            if self.clock() - started >= self.RUN_SECONDS:
+                raise AgentError("Tool time limit reached")
+        try:
+            result = await self.execute(name, args, context, check)
+            check()
+            self.steps[-1]["result"] = result
+            self.phase, self.message = "complete", "Tool finished. Movement is disarmed."
+        except AgentStopped:
+            self.steps[-1]["result"] = "Stopped; verify the robot's posture."
+        except Exception as exc:
+            if epoch == self._epoch:
+                self.phase = "error"
+                self.message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc) if isinstance(exc, AgentError) else "Robot tool failed"
+                self.steps[-1]["result"] = self.message
+        finally:
+            if epoch == self._epoch:
+                self.finish(context)
+            self.running = False
 
     def check(self, epoch, context):
         if epoch != self._epoch or not self.running:

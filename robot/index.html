@@ -66,6 +66,7 @@
 </style>
 
 <h1>Go2 Control</h1>
+<p><a href="/plane">Open the unified control plane →</a></p>
 <p><a href="/vision">Open camera object recognition &amp; counting →</a></p>
 <p id="status">Loading…</p>
 <p id="controlStatus" role="status">Connecting dashboard controls…</p>
@@ -539,7 +540,7 @@ function openControl() {
   reconnectControl.hidden = true;
   controlStatus.textContent = "Connecting dashboard controls… Movement is disarmed.";
   const candidate = new WebSocket(
-    `ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`
+    `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/control?token=${encodeURIComponent(token)}`
   );
   socket = candidate;
   candidate.onmessage = event => {

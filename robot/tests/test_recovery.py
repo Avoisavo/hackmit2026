@@ -372,6 +372,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 raise app.WebSocketDisconnect()
 
         socket = SimpleNamespace(
+            scope={"scheme": "ws"},
             headers={"host": "127.0.0.1:8010", "origin": "http://127.0.0.1:8010"},
             query_params={"token": app.TOKEN}, accept=AsyncMock(), close=AsyncMock(),
             receive_json=receive, send_json=AsyncMock(),

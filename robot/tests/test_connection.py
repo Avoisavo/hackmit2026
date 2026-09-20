@@ -34,7 +34,7 @@ class ConnectionTests(unittest.TestCase):
         after = patch.object(app, "after_connect", new_callable=AsyncMock)
         after.start()
         self.addCleanup(after.stop)
-        self.client = TestClient(app.app, base_url="http://127.0.0.1")
+        self.client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 45000))
         self.addCleanup(self.client.close)
         self.headers = {"X-Control-Token": app.TOKEN}
 

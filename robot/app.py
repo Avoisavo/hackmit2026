@@ -15,7 +15,7 @@ from pathlib import Path
 
 import requests
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, RedirectResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 from unitree_webrtc_connect import unitree_auth
@@ -26,12 +26,16 @@ from unitree_webrtc_connect.webrtc_driver import (
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
 
 if __package__:
-    from .ai_agent import CameraAgent, AgentError, validate_call
+    from .control_plane import ControlPlane, ROLES
+    from .go2_speaker import Go2Speaker
+    from .ai_agent import CameraAgent, AgentError, validate_call, TOOLS, TRICKS
     from .box_service import BoxService
     from .connection_health import ConnectionSupervisor, guard_heartbeat
     from .vision_service import VisionService
 else:
-    from ai_agent import CameraAgent, AgentError, validate_call
+    from control_plane import ControlPlane, ROLES
+    from go2_speaker import Go2Speaker
+    from ai_agent import CameraAgent, AgentError, validate_call, TOOLS, TRICKS
     from box_service import BoxService
     from connection_health import ConnectionSupervisor, guard_heartbeat
     from vision_service import VisionService
@@ -223,7 +227,8 @@ def same_origin(ws: WebSocket) -> bool:
     # The dashboard may run on any local port; the socket must come from the
     # page this server served (TrustedHostMiddleware already pins the host).
     host = ws.headers.get("host", "")
-    return bool(host) and ws.headers.get("origin") == f"http://{host}"
+    scheme = "https" if ws.scope.get("scheme") == "wss" else "http"
+    return bool(host) and ws.headers.get("origin") == f"{scheme}://{host}"
 
 
 def connected():
@@ -287,6 +292,7 @@ def stop(reason="", *, cancel_ai=True):
         last_stop_reason = reason
     if cancel_ai:
         ai.cancel(reason or "Manual control interrupted AI")
+        plane.cancel(reason or "Manual control interrupted the activity")
     cancel_scheduled_recovery()
     disarm()
 
@@ -305,10 +311,12 @@ async def watchdog():
         try:
             # Missing browser heartbeats disarm movement.
             if not connected():
-                stop("Robot link unavailable")
-            elif (armed or recovering() or ai.running) and time.monotonic() - last_input > 0.3:
+                # Offline microphone checks do not need a robot connection.
+                if armed or recovering() or ai.running or plane.running or speaker.playing:
+                    stop("Robot link unavailable")
+            elif (armed or recovering() or ai.running or plane.running) and time.monotonic() - last_input > 0.3:
                 stop("Dashboard heartbeat missed; movement stopped")
-            elif ai.running and (not latest_jpeg or time.monotonic() - frame_at >= 2):
+            elif (ai.running or plane.running) and (not latest_jpeg or time.monotonic() - frame_at >= 2):
                 stop("Camera became stale; AI stopped")
             else:
                 send_velocity(*(desired if armed else (0, 0, 0)))
@@ -325,6 +333,7 @@ async def disconnect():
     camera_session += 1
     vision.invalidate_camera()
     boxes.invalidate_camera()
+    speaker.detach()
     old, robot = robot, None
     motion_mode = ""
     latest_jpeg = b""
@@ -558,7 +567,7 @@ async def run_command(name, on=True, *, automatic_recovery=True, interrupt_ai=Tr
     label = key if parameter is None else f"{key} {'on' if on else 'off'}"
     if not connected():
         raise HTTPException(409, "Robot disconnected")
-    if interrupt_ai and ai.running:
+    if interrupt_ai and (ai.running or plane.running):
         stop("Manual command interrupted AI")
     if action_lock.locked():
         raise HTTPException(409, "Another operation is running")
@@ -672,6 +681,8 @@ async def after_connect():
     robot.video.add_track_callback(read_video)
     robot.video.switchVideoChannel(True)
     await check_mode()
+    # This installation uses Go2 Air: speech is played by the paired browser.
+    # Do not advertise an RTP sender as a built-in speaker on this model.
 
 
 @asynccontextmanager
@@ -686,6 +697,7 @@ async def lifespan(app):
             await task
         await disconnect()
         await ai.close()
+        await plane.close()
         await vision.close()
         await boxes.close()
 
@@ -710,6 +722,8 @@ vision = VisionService(lambda: (latest_jpeg, frame_at, camera_session), connecte
 
 
 def acquire_ai(control_id, epoch):
+    if plane.running or plane.busy or ai.running or ai.busy:
+        raise HTTPException(409, "Another activity owns control; stop it and wait before starting")
     if (controller is None or not isinstance(control_id, str) or not controller_id
             or not control_id.isascii() or len(control_id) != len(controller_id)
             or not secrets.compare_digest(control_id, controller_id)):
@@ -796,23 +810,92 @@ ai = CameraAgent(
     execute=execute_ai, finish=finish_ai,
 )
 app.include_router(ai.router)
+
+
+async def lesson_gesture(check):
+    check()
+    reply = await run_command("hello", automatic_recovery=False, interrupt_ai=False, guard=check)
+    check()
+    if reply["status_code"] != 0:
+        raise HTTPException(409, "Robot refused Hello")
+    await ai_wait(reply["remaining_seconds"], check)
+
+
+def acquire_audio_test(control_id, epoch):
+    # Tone/STT/TTS checks work without Go2, but still belong to this focused tab.
+    if (controller is None or not isinstance(control_id, str) or not control_id.isascii()
+            or not secrets.compare_digest(control_id, controller_id)
+            or type(epoch) is not int or epoch != stop_epoch or time.monotonic() - last_input > 0.3):
+        raise HTTPException(409, "Keep this dashboard focused; controls changed, so try the test again")
+    if ai.running or ai.busy or armed or busy or action_lock.locked() or recovering():
+        raise HTTPException(409, "Stop robot movement before running an audio test")
+    return controller, stop_epoch
+
+
+def check_audio_test(context):
+    owner, epoch = context
+    if owner is not controller or epoch != stop_epoch or time.monotonic() - last_input > 0.3:
+        raise HTTPException(409, "Audio test stopped because dashboard controls changed")
+
+
+speaker = Go2Speaker(lambda: robot, connected)
+plane = ControlPlane(vision=vision, acquire=acquire_ai, check_context=check_ai_context,
+                     stop_robot=stop, gesture=lesson_gesture, finish=finish_ai,
+                     audio_acquire=acquire_audio_test, audio_check=check_audio_test)
+app.include_router(plane.router)
 app.include_router(vision.router)
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["127.0.0.1", "localhost"],
+    allowed_hosts=["127.0.0.1", "localhost", *filter(None, os.getenv("CONTROL_HOSTS", "").split(","))],
 )
 
 
 @app.middleware("http")
 async def protect_api(request: Request, call_next):
+    # LAN devices get role-scoped pairing keys, never the operator page/token.
+    if request.url.path in ("/", "/plane", "/controls", "/vision"):
+        if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+            return HTMLResponse("Open the control plane on the server's localhost address. Join other devices using their paired links.", status_code=403)
     # Browser receives this per-run token from the local dashboard.
     if request.url.path.startswith("/api/"):
         if request.headers.get("X-Control-Token") != TOKEN:
             return JSONResponse({"detail": "Unauthorized"}, status_code=403)
+        if plane.running and request.method == "POST" and (
+                request.url.path.startswith("/api/vision/") or request.url.path == "/api/ai/key"):
+            return JSONResponse({"detail": "The activity owns camera analysis and its key. Use STOP ALL first."}, status_code=409)
     return await call_next(request)
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/plane", response_class=HTMLResponse)
+async def control_plane_page():
+    page = Path(__file__).with_name("plane_web").joinpath("operator.html").read_text()
+    return HTMLResponse(page.replace("__TOKEN__", TOKEN).replace("__ROBOT_IP__", html.escape(ROBOT_IP)),
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@app.get("/device/{role}", response_class=HTMLResponse)
+async def device_page(role: str):
+    if role not in ROLES:
+        raise HTTPException(404, "Unknown device role")
+    page = Path(__file__).with_name("plane_web").joinpath("device.html").read_text()
+    return HTMLResponse(page.replace("__ROLE__", role),
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@app.get("/plane-assets/{name}")
+async def plane_asset(name: str):
+    if name not in ("operator.js", "device.js", "deepgram.js", "plane.css", "twinkle.js"):
+        raise HTTPException(404, "Asset not found")
+    return FileResponse(Path(__file__).with_name("plane_web") / name,
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/")
+async def landing():
+    return RedirectResponse("/plane", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/controls", response_class=HTMLResponse)
 async def home():
     page = Path(__file__).with_name("index.html").read_text()
     page = page.replace("__TOKEN__", TOKEN).replace("__ROBOT_IP__", html.escape(ROBOT_IP))
@@ -824,6 +907,50 @@ async def vision_page():
     page = Path(__file__).with_name("vision.html").read_text()
     return HTMLResponse(page.replace("__TOKEN__", TOKEN),
                         headers={"Cache-Control": "no-store"})
+
+
+
+@app.get("/api/ai/tools")
+async def tool_catalog():
+    return {
+        "version": 1, "tools": TOOLS,
+        "dispatch": {"method": "POST", "path": "/api/ai/call",
+            "authentication": "X-Control-Token (server/operator only)",
+            "body": {"name": "move_robot", "arguments": {"direction": "forward", "seconds": 0.3, "speed": 0.15, "reason": "Visible clear space ahead"},
+                "run_id": "unique-call-id-at-least-16-chars", "control_id": "from ws/control ready", "control_epoch": "from api/status stop_epoch"},
+            "result": "Returns run status immediately. Poll /api/ai/status for phase and steps[].result. Reuse a run_id to avoid duplicate motion."},
+        "limits": {"max_step_seconds": 1, "max_joystick_input": 0.3, "camera_max_age_seconds": 2,
+            "operator_heartbeat_seconds": 0.3, "one_tool_at_a_time": True,
+            "stop": "POST /api/stop or Space; cancels pending actions and audio"},
+        "movements": [
+            {"name": name, "ai_tool": "move_robot" if name in ("forward", "turn_left", "turn_right") else None,
+             "argument": {"direction": name, "seconds": 0.3, "speed": 0.15} if name in ("forward", "turn_left", "turn_right") else None,
+             "manual_endpoint": "/ws/control", "manual_method": "WebSocket",
+             "manual_payload": {"type": "move", "forward": values[0], "left": values[1], "turn": values[2]},
+             "normal_command": "joystick", "ai_mode_command": "joystick"}
+            for name, values in {"forward": (0.15, 0, 0), "backward": (-0.15, 0, 0),
+                "strafe_left": (0, 0.15, 0), "strafe_right": (0, -0.15, 0),
+                "turn_left": (0, 0, 0.15), "turn_right": (0, 0, -0.15)}.items()
+        ] + [
+            {"name": name, "ai_tool": "set_posture", "argument": {"posture": name},
+             "manual_endpoint": "/api/posture/" + name, "normal_command": command, "ai_mode_command": command}
+            for name, command in POSTURES.items()
+        ] + [
+            {"name": name, "ai_tool": "perform_trick" if name in TRICKS else None,
+             "argument": {"action": name} if name in TRICKS else None,
+             "manual_endpoint": "/api/action/" + name, "normal_command": values[0], "ai_mode_command": values[1],
+             "held_pose": values[2], "duration_seconds": AUTO_RECOVER_AFTER.get(name, 3)}
+            for name, values in ACTIONS.items()
+        ],
+        "components": [
+            {"name": "Computer / external speaker test tone", "method": "POST", "path": "/api/plane/test", "arguments": {"kind": "tone"}, "requires_control_context": True},
+            {"name": "ElevenLabs voice on paired speaker", "method": "POST", "path": "/api/plane/test", "arguments": {"kind": "voice"}, "requires_control_context": True},
+            {"name": "Microphone test", "method": "POST", "path": "/api/plane/test", "arguments": {"kind": "microphone"}, "requires_control_context": True},
+            {"name": "Face expression", "method": "POST", "path": "/api/plane/face", "arguments": {"name": "Celebrate"}},
+            {"name": "Camera observation", "method": "POST", "path": "/api/vision/scan", "arguments": {}},
+            {"name": "Stop all", "method": "POST", "path": "/api/stop", "arguments": {}},
+        ],
+    }
 
 
 @app.get("/api/status")
@@ -845,6 +972,8 @@ async def status():
         "transport": transport_state(),
         "boxes": boxes.status(),
         "ai": ai.status(),
+        "activity": {"running": plane.running, "phase": plane.phase},
+        "speaker": plane.status()["speaker"],
         "stop_epoch": stop_epoch,
     }
 
@@ -962,7 +1091,7 @@ async def stop_api():
 @app.post("/api/arm")
 async def arm():
     global armed, last_input, busy
-    if ai.running:
+    if ai.running or plane.running:
         stop("Manual movement interrupted AI")
     if not connected() or controller is None:
         raise HTTPException(409, "Connect robot and dashboard first")
@@ -1031,7 +1160,7 @@ async def set_mode(name: str):
         raise HTTPException(404, "Unknown motion mode")
     if not connected():
         raise HTTPException(409, "Robot disconnected")
-    if ai.running:
+    if ai.running or plane.running:
         stop("Mode switch interrupted AI")
     if action_lock.locked():
         raise HTTPException(409, "Another operation is running")
@@ -1094,7 +1223,7 @@ async def control(ws: WebSocket):
             if not all(math.isfinite(v) for v in values):
                 raise ValueError("Invalid movement")
             last_input = time.monotonic()
-            if ai.running:
+            if ai.running or plane.running:
                 if any(values):
                     stop("Manual drive input interrupted AI; press again to drive")
                 # Zero heartbeats keep AI alive without replacing its velocity.
