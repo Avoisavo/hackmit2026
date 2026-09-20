@@ -42,7 +42,7 @@
 <div class="row"><label>Fallback object count <input id="fallbackCount" type="number" min="0" max="20" value="4"></label><button id="fallbackApply">F · Apply fallback count</button><button data-demo-event="learner_left">L · Learner walked away</button><button data-demo-event="bump">B · Hard-bump cue</button><button data-demo-event="gentle">G · Gentle-touch cue</button></div>
 <p class="muted">Fallback counts are labelled presenter input. B is the bump fallback; fresh black Go2 camera frames also cue Soft Hands. G confirms the gentle touch. These are demo cues, not force readings. Use your teammate for Soft Hands; never invite a judge to bump the robot. Keys work outside text fields.</p>
 <details><summary>HB face switcher · keys 1–8</summary><div class="row"><button data-face="Ready">1 · Ready</button><button data-face="Watching">2 · Watching</button><button data-face="Encourage">3 · Encourage</button><button data-face="Thinking">4 · Thinking</button><button data-face="Go">5 · Go</button><button data-face="Celebrate">6 · Celebrate</button><button data-face="Rest">7 · Rest</button><button data-face="Soft confused">8 · Soft confused</button><button id="autoFace">Resume AI expressions</button></div><p class="muted">Choosing a face holds it until you resume AI expressions or start another demo. Sends the same expression to the HB board and local preview.</p></details>
-<details><summary>Operator answer fallback</summary><p class="muted">For checking the flow before a microphone joins. This sends a typed answer to the current question.</p>
+<details><summary>Operator answer fallback</summary><p class="muted">For checking the flow before a microphone joins. This sends a typed answer to the current question. In Demo 3, type “sorry” when HARE asks for an apology.</p>
 <form id="answerForm" class="row"><input id="answer" maxlength="300" placeholder="Child's answer" aria-label="Typed answer"><button id="sendAnswer">Submit answer</button></form></details>
 <details><summary>Manual robot movement</summary><p class="muted">These buttons move the real robot. Keep space clear. Each step lasts 0.3 seconds at 0.15 joystick input and stops automatically. A fresh camera and this focused tab are required.</p>
 <div class="row"><button data-posture="stand">Stand up</button><button data-posture="balance">Balance stand</button><button data-posture="lie">Lie down</button><button data-trick="hello">Hello / wave</button></div>
@@ -98,6 +98,6 @@
 <section class="card"><details open><summary>Provider connections</summary><p id="keyStatus" class="muted">Keys stay in this server's memory. Camera frames go to OpenAI; microphone audio goes to Deepgram; robot speech goes to ElevenLabs.</p>
 <p class="muted">Settings load automatically from the repository’s private <code>.env.local</code>. Restart the server after changing that file. Keys are never sent to this page.</p></details></section>
 
-<p class="muted build-label">HARE · DEMO DASHBOARD · AI STAGES + HB FACES V6</p>
+<p class="muted build-label">HARE · DEMO DASHBOARD · AI STAGES + HB FACES V6 · PLAYFUL VOICE + SAY SORRY</p>
 </details>
 </main><script src="/plane-assets/twinkle.js"></script><script type="module" src="/plane-assets/operator.js"></script></body></html>

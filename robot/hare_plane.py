@@ -115,7 +115,7 @@ class HareControlPlane(ControlPlane):
         if self.demo:
             state['demo'] = self.demo.status()
             if self.running:
-                state['listen'] = not self.speech and self.phase in ('waiting_blocks', *ANSWER_PHASES)
+                state['listen'] = not self.speech and self.phase in ('waiting_blocks', 'await_apology', *ANSWER_PHASES)
             if self.running and self.demo.rehearsal:
                 state['speech'] = None
         return state

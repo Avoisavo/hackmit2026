@@ -1,7 +1,7 @@
 # HARE presenter runbook
 
 Start the `dog` checkout with `robot/start-control-plane.sh`, then open
-<http://127.0.0.1:8020/plane>. The page shows **AI STAGES + HB FACES V6**.
+<http://127.0.0.1:8020/plane>. The page shows **AI STAGES + HB FACES V6 · PLAYFUL VOICE + SAY SORRY**.
 The server reads the repository's private `.env.local`, even with plain Uvicorn.
 Explicit environment settings override that file. No credentials belong in Git.
 
@@ -12,12 +12,12 @@ Save connections clicks are needed. The microphone waits while HARE speaks.
 
 ## Demo 1 — Count and Check
 
-HARE says **“Put five objects in front of me.”** Any kind or color of small
+HARE says **“Let's play a counting game! Can you put five objects in front of me?”** Any kind or color of small
 movable object counts. Group them clearly in the foreground. People, hands,
 furniture, the mat, background clutter and images of objects do not count.
 
 Place four. OpenAI checks two fresh camera frames; when both counts agree with
-high confidence, HARE asks **“You have four. How many more do we need?”** Saying
+high confidence, HARE asks **“I spy four! We're aiming for five. How many more do we need?”** Saying
 “one” encourages adding it. Place the fifth object: a new camera observation
 completes the check and shows **4 + 1 = 5**. A spoken answer alone cannot complete
 the physical task. This demo does not command robot movement.
@@ -37,13 +37,13 @@ emotion. **L** is the presenter override for this transition.
 The default action output for Demo 2 is **Go2 half-turn + Hello gestures**:
 
 1. HARE makes one half-turn in place, using live IMU heading feedback, then stops.
-2. It says **“Come back! Let's play a game together. Count my hellos!”**
+2. It says **“Game switch! Come back! Let's count my silly hellos together!”**
 3. It performs Hello twice, saying **“Hello!”** after each completed gesture.
-4. It asks **“I said hello twice. How many is that?”** Answer **“two.”**
-5. It says **“Two! Two hellos means two. Let's add three more.”**
+4. It asks **“Your turn, counting buddy! How many hellos did you count?”** Answer **“two.”**
+5. It says **“Two! You got it! Two hellos means two. Ready for three more?”**
 6. It performs three more Hello gestures and asks for the total. Answer **“five.”**
-7. It explains **“Five! Two plus three is five. Let's put five objects in front
-   of me.”** The camera checks the final group of five.
+7. It explains **“Five! Woohoo! Two plus three is five. Let's try our five-object
+   mission again!”** The camera checks the final group of five.
 
 Keep space clear for standing, turning and waving. The robot never chases anyone
 or translates during the turn. The turn stops after approximately 180 degrees
@@ -66,11 +66,20 @@ or an image that was already black at startup cannot trigger it.
 
 HARE then says:
 
-- **“Ouch, that was too hard. Softer, please.”**
-- **“Other people and animals feel pain too.”**
-- **“Show me soft hands now.”**
+- **“Ouch! A little softer, please. Let's practise gentle hands together.”**
+- **“People and animals need gentle care too.”**
+- **“Can you say, sorry HARE? Then we can try again together.”**
 
-After the gentle touch, press **G**. HARE says **“Perfect. Soft hands.”** Gentle
+The microphone opens after the question. Say **“Sorry, HARE”** or **“I'm sorry.”**
+HARE waits for an apology, then says:
+
+- **“Thank you for saying sorry! That was kind. We're a team!”**
+- **“Ready for gentle paws? Show me your soft hands.”**
+
+If the mic misses the apology, type **sorry** in **Manual override → Operator
+answer fallback**. Caption rehearsal uses this same typed fallback.
+
+After the gentle touch, press **G**. HARE says **“Lovely soft hands! Thank you for being gentle with me.”** Gentle
 touch remains a presenter event; there is no touch or force sensor. **B** remains
 the bump fallback. The black-camera cue is deliberately labelled as a demo cue,
 not proof of an impact or pain. Uncover the camera after the cue.

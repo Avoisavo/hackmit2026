@@ -1,4 +1,5 @@
 """HARE's bounded lessons: five objects, Hello arithmetic, and staged care cues."""
+import re
 import secrets
 from fastapi import HTTPException
 if __package__:
@@ -49,6 +50,9 @@ class HareDemo:
         self.person_visible = None
         self.person_observed_at = 0
         self.last_transcript = ''
+        self.apology_received = False
+        if name == 'soft_hands':
+            self.note = 'Cover the camera, say sorry, then show soft hands. G confirms the gentle touch.'
 
     @property
     def timeout_due(self):
@@ -67,6 +71,7 @@ class HareDemo:
             'hellos':self.hellos, 'effect':self.effect, 'motion':self.motion,
             'note':self.note, 'presenter_cue':self.cue, 'adapted':self.adapted,
             'adaptation_source':self.adaptation_source, 'touch_source':self.touch_source,
+            'apology_received':self.apology_received,
             'turn':self.turn_result, 'stall_seconds':self.stall_seconds,
             'timeout_remaining':max(0,round(self.stall_seconds-(self.p.clock()-self.progress_at),1)) if self.name=='run_play' and not self.adapted else None}
 
@@ -76,7 +81,7 @@ class HareDemo:
     def begin(self):
         p = self.p
         if self.name in ('count_check','run_play'):
-            self.say('Put five objects in front of me.', 'observing')
+            self.say("Let's play a counting game! Can you put five objects in front of me?", 'observing')
         elif self.name == 'soft_hands':
             p.phase, p.face = 'await_bump', 'Ready'
             p.message = 'Cover the Go2 camera briefly for the staged bump cue, or press B. No impact sensor is connected.'
@@ -107,9 +112,14 @@ class HareDemo:
         elif p.phase == 'next_hello':
             p.phase = 'gesturing'
         elif p.phase == 'empathy':
-            self.say('Other people and animals feel pain too.', 'request_soft', 'Soft confused')
+            self.say('People and animals need gentle care too.', 'request_apology', 'Soft confused')
+        elif p.phase == 'request_apology':
+            self.say('Can you say, sorry HARE? Then we can try again together.', 'await_apology', 'Encourage')
+        elif p.phase == 'await_apology':
+            p.question_id = secrets.token_hex(12)
         elif p.phase == 'request_soft':
-            self.say('Show me soft hands now.', 'await_gentle', 'Encourage')
+            p.question_id = ''
+            self.say('Ready for gentle paws? Show me your soft hands.', 'await_gentle', 'Encourage')
         elif p.phase == 'complete':
             self.complete()
         if self.pending_count is not None and p.phase in COUNT_PHASES:
@@ -143,7 +153,7 @@ class HareDemo:
                 p.log('robot turn', self.turn_result['note'])
             else:
                 self.turn_result = {'turned':False, 'note':'Screen rehearsal; no robot turn commanded'}
-            self.say("Come back! Let's play a game together. Count my hellos!", 'hello_two', 'Go')
+            self.say("Game switch! Come back! Let's count my silly hellos together!", 'hello_two', 'Go')
         elif p.phase == 'gesturing':
             if self.hellos_left:
                 if self.motion == 'robot_gestures':
@@ -158,10 +168,10 @@ class HareDemo:
             else:
                 p.question_id = secrets.token_hex(12)
                 if self.hello_after == 'answer_two':
-                    self.say('I said hello twice. How many is that?', 'answer_two', 'Thinking')
+                    self.say('Your turn, counting buddy! How many hellos did you count?', 'answer_two', 'Thinking')
                 else:
                     self.equation = '2 + 3 = ?'
-                    self.say('How many hellos altogether?', 'answer_five', 'Thinking')
+                    self.say('Two hellos, then three more! How many altogether?', 'answer_five', 'Thinking')
         elif self.timeout_due:
             recent_absence = self.person_visible is False and p.clock()-self.person_observed_at <= 12
             self.adapt(f'No object or answer progress for {self.stall_seconds} seconds'+('; recent camera view contains no person' if recent_absence else '; learner leaving is a demo assumption'), 'camera_timeout' if recent_absence else 'timeout')
@@ -204,13 +214,13 @@ class HareDemo:
         if count==p.target:
             p.task_complete=source=='camera';p.question_id=''
             self.equation=f'{self.baseline} + {p.target-self.baseline} = {p.target}' if self.baseline is not None else str(p.target)
-            self.say('Five objects! You did it!', 'complete', 'Celebrate')
+            self.say('Five objects! Woohoo! Mission complete. We did it together!', 'complete', 'Celebrate')
         elif count>p.target:
             if count!=previous:
-                self.say('We need five. Can you take some away?', 'waiting_blocks','Encourage')
+                self.say("What a collection! Let's keep five. Can you move the extras aside?", 'waiting_blocks','Encourage')
         elif count>0 and count!=previous:
             self.baseline=count;p.question_id=secrets.token_hex(12)
-            self.say(f'You have {NUMBERS[count]}. How many more do we need?', 'waiting_blocks','Thinking')
+            self.say(f"I spy {NUMBERS[count]}! We're aiming for five. How many more do we need?", 'waiting_blocks','Thinking')
         elif p.phase=='observing':
             p.message='Waiting for five objects in front of HARE.'
 
@@ -218,24 +228,33 @@ class HareDemo:
         p=self.p
         self.last_transcript=text
         self.progress_at=p.clock()
-        if p.phase in ANSWER_PHASES:
+        if self.name == 'soft_hands' and p.phase == 'await_apology':
+            # Accept ordinary spoken apologies without letting unrelated or
+            # negated uses of "sorry" skip this step. No maths grading here.
+            apology = re.match(r"^\s*(?:(?:okay|ok|yes)[,!.]?\s+)?(?:i(?:['’]m| am)\s+)?(?:(?:so|really|very)\s+)?sorry\b", text, re.I)
+            if apology:
+                self.apology_received = True
+                self.say("Thank you for saying sorry! That was kind. We're a team!", 'request_soft', 'Celebrate')
+            else:
+                self.say("Let's try these words together: sorry, HARE.", 'await_apology', 'Encourage')
+        elif p.phase in ANSWER_PHASES:
             expected=2 if p.phase=='answer_two' else 5
             if number==expected:
                 p.answer_correct=True
                 if expected==2:
                     self.equation='2 + 3 = ?'
-                    self.say("Two! Two hellos means two. Let's add three more.",'hello_three_more','Celebrate')
+                    self.say("Two! You got it! Two hellos means two. Ready for three more?",'hello_three_more','Celebrate')
                 else:
                     self.equation='2 + 3 = 5';p.vision.clear_observation();p.observed=None
-                    self.say("Five! Two plus three is five. Let's put five objects in front of me.",'return_objects','Celebrate')
+                    self.say("Five! Woohoo! Two plus three is five. Let's try our five-object mission again!",'return_objects','Celebrate')
             else:
                 p.answer_correct=False
-                self.say(f'Good try! I said hello {NUMBERS[expected]} times. How many is that?',p.phase,'Encourage')
+                self.say(f"Let's work it out together. I said hello {NUMBERS[expected]} times. What number is that?",p.phase,'Encourage')
         elif p.phase=='waiting_blocks':
             if p.observed is None or p.observed>=p.target or p.clock()-self.observed_at>20:
                 raise HTTPException(409,'Check the objects again before answering')
             missing=p.target-p.observed;p.answer_correct=number==missing
-            line=f'Yes. Add {NUMBERS[missing]} more objects.' if number==missing else f'We have {p.observed} and need five. How many more do we need?'
+            line=f"Yes, {NUMBERS[missing]} more! Let's add {'it' if missing == 1 else 'them'} and see!" if number==missing else f"Let's count together. We have {p.observed} and need five. How many more do we need?"
             self.say(line,'waiting_blocks','Encourage')
         else:
             raise HTTPException(409,'Wait for HARE to finish the current step')
@@ -251,9 +270,9 @@ class HareDemo:
             self.touch_source='camera_black' if data.get('source')=='camera_black' else 'presenter'
             self.effect={'id':secrets.token_hex(6),'kind':'wobble'}
             p.log(self.touch_source,'Staged rough-touch cue; no force or impact measurement')
-            self.say('Ouch, that was too hard. Softer, please.','empathy','Soft confused')
+            self.say("Ouch! A little softer, please. Let's practise gentle hands together.",'empathy','Soft confused')
         elif name=='gentle' and self.name=='soft_hands' and p.phase=='await_gentle':
             p.log('presenter','Gentle-touch cue; no touch sensor reading')
-            self.say('Perfect. Soft hands.','complete','Celebrate')
+            self.say('Lovely soft hands! Thank you for being gentle with me.','complete','Celebrate')
         else:
             raise HTTPException(409,'That cue does not match the current demo step')

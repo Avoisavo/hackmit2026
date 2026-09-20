@@ -84,9 +84,10 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
     async def test_count_check_requires_five_physical_objects(self):
         await self.start()
         self.assertEqual(self.vision.target_object,'small movable objects grouped in the foreground')
-        self.assertEqual(self.plane.speech['text'],'Put five objects in front of me.')
+        self.assertIn('five objects in front of me',self.plane.speech['text'])
         await self.speech(); self.camera(4)
-        self.assertEqual(self.plane.speech['text'],'You have four. How many more do we need?')
+        self.assertIn('I spy four!',self.plane.speech['text'])
+        self.assertIn('How many more do we need?',self.plane.speech['text'])
         await self.speech()
         self.assertEqual((await self.answer('one')).status_code,200)
         self.assertFalse(self.plane.task_complete)
@@ -149,12 +150,55 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post('/api/plane/event',json=payload)).status_code,200)
         self.assertEqual(self.plane.speech['id'],speech_id)
         self.assertEqual(self.plane.demo.effect['kind'],'wobble')
-        await self.speech(); self.assertIn('Other people and animals',self.plane.speech['text'])
-        await self.speech(); self.assertEqual(self.plane.speech['text'],'Show me soft hands now.')
+        await self.speech(); self.assertIn('People and animals',self.plane.speech['text'])
+        await self.speech(); self.assertIn('sorry HARE',self.plane.speech['text'])
+        self.assertFalse((await self.device('mic','state')).json()['listen'])
+        self.assertEqual((await self.answer('sorry')).status_code,409)
+        await self.speech()
+        self.assertEqual(self.plane.phase,'await_apology')
+        self.assertTrue((await self.device('mic','state')).json()['listen'])
+        self.assertEqual((await self.event('gentle')).status_code,409)
+        apology={'text':'Sorry, HARE!','session_id':self.plane.session_id,
+            'question_id':self.plane.question_id,'event_id':'apology_123456'}
+        self.assertEqual((await self.device('mic','transcript',apology)).status_code,200)
+        thanks_id=self.plane.speech['id']
+        self.assertEqual((await self.device('mic','transcript',apology)).status_code,200)
+        self.assertEqual(self.plane.speech['id'],thanks_id)
+        self.assertTrue(self.plane.demo.apology_received)
+        self.assertFalse((await self.device('mic','state')).json()['listen'])
+        self.assertIn('Thank you for saying sorry',self.plane.speech['text'])
+        await self.speech(); self.assertIn('Show me your soft hands',self.plane.speech['text'])
         await self.speech(); await self.event('gentle')
-        self.assertEqual(self.plane.speech['text'],'Perfect. Soft hands.')
+        self.assertIn('Lovely soft hands!',self.plane.speech['text'])
         await self.speech(); self.assertFalse(self.plane.running)
         self.assertEqual((await self.client.post('/api/plane/event',json=payload)).status_code,409)
+
+    async def test_soft_hands_reprompts_unrelated_or_negated_apologies_and_rejects_stale_answers(self):
+        await self.start('soft_hands'); await self.event('bump')
+        for _ in range(3): await self.speech()
+        for text in ('five', 'I am not sorry', 'why should I say sorry', 'sorryish'):
+            old_question=self.plane.question_id
+            self.assertEqual((await self.answer(text)).status_code,200)
+            self.assertFalse(self.plane.demo.apology_received)
+            self.assertEqual((await self.event('gentle')).status_code,409)
+            await self.speech()
+            self.assertEqual(self.plane.phase,'await_apology')
+            self.assertEqual((await self.answer('sorry',question_id=old_question)).status_code,409)
+        self.assertEqual((await self.answer('please stop')).status_code,200)
+        self.assertFalse(self.plane.running)
+        self.assertEqual((await self.answer('sorry')).status_code,409)
+        self.assertFalse(self.plane.demo.apology_received)
+
+    async def test_soft_hands_accepts_natural_apologies_without_maths_grading(self):
+        for text in ('Sorry!', "I'm sorry, HARE.", 'I’m so sorry.', 'I am really sorry', 'Okay, sorry HARE'):
+            with self.subTest(text=text):
+                await self.start('soft_hands'); await self.event('bump')
+                for _ in range(3): await self.speech()
+                self.assertEqual((await self.answer(text)).status_code,200)
+                self.assertTrue(self.plane.status()['demo']['apology_received'])
+                self.assertFalse(self.plane.answer_correct)
+                self.assertFalse(self.plane.task_complete)
+                self.plane.cancel('Next test case')
 
     async def test_turn_requires_fresh_camera_and_stop_prevents_invitation(self):
         self.vision.camera_fresh.return_value = False
@@ -183,6 +227,11 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         await self.start('soft_hands',rehearsal=True)
         await self.event('bump')
         for _ in range(3): self.now+=6; await self.plane.demo.tick()
+        self.assertEqual(self.plane.phase,'await_apology')
+        response=await self.client.post('/api/plane/answer',json={'text':'sorry',
+            'session_id':self.plane.session_id,'question_id':self.plane.question_id,'event_id':'typed_sorry_1234'})
+        self.assertEqual(response.status_code,200,response.text)
+        for _ in range(2): self.now+=6; await self.plane.demo.tick()
         self.assertEqual(self.plane.phase,'await_gentle')
         await self.event('gentle'); self.now+=6; await self.plane.demo.tick()
         self.assertFalse(self.plane.running)
@@ -301,6 +350,9 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.plane.speech['text'].startswith('Ouch'))
         self.assertEqual(self.plane.observer_status['stage'],'camera_covered')
         await self.speech();await self.speech();await self.speech()
+        self.assertEqual(self.plane.phase,'await_apology')
+        self.assertEqual((await self.answer('sorry')).status_code,200)
+        await self.speech();await self.speech()
         self.assertEqual(self.plane.phase,'await_gentle')
         await self.event('gentle');await self.speech()
         self.assertFalse(self.plane.running)

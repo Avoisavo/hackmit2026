@@ -46,8 +46,20 @@ async function fixture({micGate,connected=false,configured=true}={}) {
   });
   vm.runInContext(audio+'\n'+source,context);
   socket.onmessage({data:JSON.stringify({type:'ready',control_id:'test-control'})});await tick();
-  return {nodes,calls,contexts,clients,listeners,track,state,status,demo:name=>demos.find(d=>d.dataset.demo===name).onclick()};
+  return {nodes,calls,contexts,clients,listeners,track,state,status,render:context.render,demo:name=>demos.find(d=>d.dataset.demo===name).onclick()};
 }
+test('Demo 3 apology enables typed fallback and displays care progress instead of maths grading',async()=>{
+  const f=await fixture();
+  f.state.running=true;f.state.phase='await_apology';
+  f.state.demo={name:'soft_hands',apology_received:false};f.render(f.state);
+  assert.equal(f.nodes['#sendAnswer'].disabled,false);
+  assert.match(f.nodes['#outcome'].textContent,/Say “sorry”/);
+  f.nodes['#answer'].value='sorry';await f.nodes['#answerForm'].onsubmit({preventDefault(){}});
+  assert.equal(f.calls.find(c=>c.path==='/plane/answer').payload.text,'sorry');
+  f.state.phase='speaking';f.state.demo.apology_received=true;f.render(f.state);
+  assert.equal(f.nodes['#sendAnswer'].disabled,true);
+  assert.match(f.nodes['#outcome'].textContent,/Apology received/);
+});
 test('Demo 3 click prepares both audio devices and waits for microphone readiness before starting',async()=>{
   const gate=deferred();const f=await fixture({micGate:gate});const pending=f.demo('soft_hands');
   assert.equal(f.contexts.length,2);assert.ok(f.calls.some(c=>c.path==='capture'));

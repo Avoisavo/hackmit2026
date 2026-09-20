@@ -83,7 +83,7 @@ function render(state) {
   $('#goalCount').textContent = state.target;
   $('#seenCount').textContent = state.observed ?? '—';
   $('#startActivity').disabled = starting || state.running || state.busy || robot.ai?.busy || !controlReady;
-  $('#sendAnswer').disabled = !state.running || !['waiting_answer','waiting_blocks','answer_two','answer_five'].includes(state.phase);
+  $('#sendAnswer').disabled = !state.running || !['waiting_answer','waiting_blocks','answer_two','answer_five','await_apology'].includes(state.phase);
   $('#expression').disabled = false;
   $('#expression').value = state.face;
   $('#voiceHealth').textContent = `Speaker ${state.speaker.ready ? 'ready' : 'offline'} · ${state.devices.mic.online ? 'Mic online' : 'Mic offline'}`;
@@ -98,7 +98,9 @@ function render(state) {
   $('#observerReason').textContent = state.observer?.reason || '';
   $('#autoFace').disabled = state.face_mode !== 'manual';
   $('#keyStatus').textContent = Object.entries(state.configured).map(([name, ready]) => `${name}: ${ready ? 'configured' : 'missing'}`).join(' · ') + '. Keys stay in server memory.';
-  $('#outcome').textContent = state.task_complete ? 'Camera confirms the target number of objects.' : state.answer_correct ? 'Correct spoken answer. The added objects have not been confirmed by the camera.' : 'A correct answer and physically placing the objects are tracked separately.';
+  $('#outcome').textContent = state.demo?.name === 'soft_hands'
+    ? state.demo.apology_received ? 'Apology received. G confirms the gentle touch.' : 'HARE will ask for an apology, then soft hands. Say “sorry” when the microphone listens.'
+    : state.task_complete ? 'Camera confirms the target number of objects.' : state.answer_correct ? 'Correct spoken answer. The added objects have not been confirmed by the camera.' : 'A correct answer and physically placing the objects are tracked separately.';
   const list = $('#events'); list.replaceChildren();
   for (const event of state.events) {
     const item = document.createElement('li'), type = document.createElement('b');
