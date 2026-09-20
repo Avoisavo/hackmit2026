@@ -1,44 +1,55 @@
-import { AgentMicrophone } from "@deepgram/agents";
-
 /**
  * Microphone -> Deepgram streaming STT, emitting ONLY complete child utterances.
  *
- * Deepgram sends three kinds of "done" signal and picking the wrong one is what
- * makes a robot talk over a child:
- *   - is_final      a chunk is settled, but the child may still be talking
- *   - speech_final  endpointing decided the child stopped  <- the one we want
- *   - UtteranceEnd  a silence gap elapsed; the backup when speech_final never
- *                   fires (it can go missing in a noisy room)
+ * Every choice below was measured against the live API, not guessed:
  *
- * So: accumulate is_final chunks, flush on speech_final OR UtteranceEnd.
+ * - MediaRecorder (WebM/Opus), NOT raw PCM. With a container you must OMIT
+ *   encoding and sample_rate — Deepgram reads the container header. Declaring a
+ *   sample rate the hardware did not actually honour yields empty transcripts.
+ *
+ * - smart_format and numerals MUST be false. With either on, a number-only
+ *   answer is withheld for ~5 SECONDS while Deepgram waits to format it, and
+ *   UtteranceEnd is withheld too. For a counting game that is fatal. We map
+ *   "three" -> 3 ourselves in gameLogic.
+ *
+ * - endpointing=1000. Measured: 300-500ms splits "I think the answer is ...
+ *   seven" into two turns; 1000ms absorbs a child's mid-answer hesitation and
+ *   still finalizes ~1.5s after they stop.
+ *
+ * - Turn boundary is speech_final, never is_final. A single answer arrives as
+ *   several is_final results, and silence emits is_final with empty text.
+ *   UtteranceEnd is the backstop for noisy rooms, deduped by the empty-buffer
+ *   check in flush().
  */
 
-const PARAMS = new URLSearchParams({
-  model: "nova-3",
-  encoding: "linear16",
-  sample_rate: "16000",
-  channels: "1",
-  punctuate: "true",
-  smart_format: "true",
-  numerals: "true",
-  // Interim results are required for utterance_end_ms to do anything at all.
-  interim_results: "true",
-  // Default endpointing is 10ms, which shreds a child's speech into confetti.
-  endpointing: "400",
-  utterance_end_ms: "1500",
-  vad_events: "true",
-});
+const DG_URL = "wss://api.deepgram.com/v1/listen";
 
-// Words the game branches on. Keyterm prompting measurably lifts recall, and
-// small children need the help.
+const PARAMS: Record<string, string> = {
+  model: "nova-3",
+  language: "en-US",
+  // Required by utterance_end_ms — without it the API returns HTTP 400.
+  interim_results: "true",
+  endpointing: "1000",
+  utterance_end_ms: "1000",
+  vad_events: "true",
+  punctuate: "true",
+  smart_format: "false",
+  numerals: "false",
+  // NO encoding, NO sample_rate: MediaRecorder sends a container.
+};
+
+// Words the game branches on. Keyterm prompting lifts recall on domain words,
+// and small children need the help.
 const KEYTERMS = [
   "yes", "no", "one", "two", "three", "four", "five",
   "blocks", "block", "more", "help", "I don't know",
 ];
 
+export type UtteranceReason = "speech_final" | "utterance_end";
+
 export interface SttHandlers {
   /** A complete child utterance. Never fires for partial speech. */
-  onUtterance: (text: string) => void;
+  onUtterance: (text: string, reason: UtteranceReason) => void;
   /** Live partial text, for display only. Never drive game logic from this. */
   onInterim?: (text: string) => void;
   onOpen?: () => void;
@@ -46,17 +57,66 @@ export interface SttHandlers {
   onClose?: () => void;
 }
 
+interface DgResults {
+  type: "Results";
+  is_final: boolean;
+  speech_final: boolean;
+  channel?: { alternatives?: { transcript?: string }[] };
+}
+interface DgOther {
+  type: "UtteranceEnd" | "SpeechStarted" | "Metadata" | "Error";
+  code?: string;
+  description?: string;
+}
+type DgMessage = DgResults | DgOther;
+
 export class ChildListener {
   private ws: WebSocket | null = null;
-  private mic: AgentMicrophone | null = null;
-  private chunks: string[] = [];
-  private framesSent = 0;
+  private stream: MediaStream | null = null;
+  private recorder: MediaRecorder | null = null;
+  private analyser: AnalyserNode | null = null;
+  private ctx: AudioContext | null = null;
+  private segments: string[] = [];
+  private paused = false;
   private stopped = false;
+  private chunksSent = 0;
 
   constructor(private readonly handlers: SttHandlers) {}
 
+  /** Chrome/Edge/Firefox get webm/opus. Safari below 18.4 has no WebM at all. */
+  private static pickMimeType(): string {
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/mp4",
+    ];
+    for (const c of candidates) {
+      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c)) return c;
+    }
+    return "";
+  }
+
   async start(): Promise<void> {
     this.stopped = false;
+    this.paused = false;
+
+    // Echo cancellation is the real defence against the robot hearing itself.
+    // Pausing the track is belt-and-braces on top.
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+    });
+
+    // A separate analyser purely for the on-screen level meter.
+    this.ctx = new AudioContext();
+    this.analyser = this.ctx.createAnalyser();
+    this.analyser.fftSize = 256;
+    this.ctx.createMediaStreamSource(this.stream).connect(this.analyser);
 
     const res = await fetch("/api/deepgram/token", { method: "POST" });
     if (!res.ok) {
@@ -69,111 +129,163 @@ export class ChildListener {
     for (const k of KEYTERMS) qs.append("keyterm", k);
 
     // Browsers cannot set an Authorization header on a WebSocket, so the
-    // credential rides in the subprotocol list.
-    const ws = new WebSocket(
-      `wss://api.deepgram.com/v1/listen?${qs.toString()}`,
-      ["bearer", access_token],
-    );
-    ws.binaryType = "arraybuffer";
+    // credential rides in the subprotocol list. A /v1/auth/grant JWT needs the
+    // "bearer" scheme specifically — ["token", jwt] returns 401.
+    const ws = new WebSocket(`${DG_URL}?${qs.toString()}`, ["bearer", access_token]);
     this.ws = ws;
 
-    ws.addEventListener("open", () => {
+    ws.onopen = () => {
       console.log("[DG] socket open");
       this.handlers.onOpen?.();
-    });
-    ws.addEventListener("error", () => {
+      this.startRecorder();
+    };
+    ws.onmessage = (ev: MessageEvent) => {
+      if (typeof ev.data !== "string") return;
+      try {
+        this.handle(JSON.parse(ev.data) as DgMessage);
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+    ws.onerror = () => {
       console.log("[DG] socket error");
       this.handlers.onError?.("Deepgram socket error");
-    });
-    ws.addEventListener("close", (ev) => {
+    };
+    ws.onclose = (ev) => {
       console.log(`[DG] socket closed code=${ev.code} reason=${ev.reason || "(none)"}`);
+      this.stopRecorder();
       this.handlers.onClose?.();
-    });
-    ws.addEventListener("message", (ev) => this.onMessage(ev));
+    };
+  }
 
-    await new Promise<void>((resolve, reject) => {
-      const ok = () => { ws.removeEventListener("error", bad); resolve(); };
-      const bad = () => { ws.removeEventListener("open", ok); reject(new Error("could not open Deepgram socket")); };
-      ws.addEventListener("open", ok, { once: true });
-      ws.addEventListener("error", bad, { once: true });
-    });
+  private startRecorder() {
+    if (!this.stream) return;
 
-    // AgentMicrophone is a standalone getUserMedia + AudioWorklet that emits
-    // Int16 PCM at 16kHz — exactly the linear16 feed configured above.
-    this.mic = new AgentMicrophone((frame) => {
-      if (this.ws?.readyState !== WebSocket.OPEN) return;
-      this.ws.send(frame);
-      this.framesSent += 1;
-      if (this.framesSent % 100 === 0) {
-        console.log(`[DG] frames sent: ${this.framesSent}, level=${this.level.toFixed(3)}`);
+    const mimeType = ChildListener.pickMimeType();
+    console.log(`[DG] recording as ${mimeType || "(browser default)"}`);
+
+    const rec = mimeType
+      ? new MediaRecorder(this.stream, { mimeType })
+      : new MediaRecorder(this.stream);
+
+    rec.ondataavailable = (ev: BlobEvent) => {
+      if (ev.data.size === 0 || this.ws?.readyState !== WebSocket.OPEN) return;
+      // Keep sending even while paused: a disabled track emits silence, which
+      // keeps the container valid and the socket alive. Dropping chunks
+      // mid-stream would corrupt the WebM container.
+      this.ws.send(ev.data);
+      this.chunksSent += 1;
+      if (this.chunksSent % 40 === 0) {
+        console.log(`[DG] chunks sent: ${this.chunksSent}, level=${this.level.toFixed(3)}`);
       }
-    }, { sampleRate: 16000, echoCancellation: true, noiseSuppression: true });
+    };
 
-    await this.mic.start();
-    console.log("[DG] mic started, muted =", this.mic.muted);
+    rec.start(250);
+    this.recorder = rec;
   }
 
-  private onMessage(ev: MessageEvent) {
-    if (typeof ev.data !== "string") return;
+  private handle(msg: DgMessage) {
+    // Switch on type FIRST: UtteranceEnd's `channel` is an array, not the
+    // object Results carries, so touching it blind throws.
+    switch (msg.type) {
+      case "Results": {
+        const text = (msg.channel?.alternatives?.[0]?.transcript ?? "").trim();
 
-    let msg: Record<string, unknown>;
+        if (!msg.is_final) {
+          if (text) this.handlers.onInterim?.([...this.segments, text].join(" "));
+          return;
+        }
+
+        if (text) {
+          console.log(`[DG] is_final speech_final=${msg.speech_final} "${text}"`);
+          this.segments.push(text);
+        }
+        if (msg.speech_final) this.flush("speech_final");
+        return;
+      }
+
+      case "UtteranceEnd":
+        this.flush("utterance_end");
+        return;
+
+      case "Error":
+        console.log("[DG] error", msg.code, msg.description);
+        this.handlers.onError?.(`${msg.code ?? "Deepgram"}: ${msg.description ?? ""}`);
+        return;
+
+      default:
+        return;
+    }
+  }
+
+  private flush(reason: UtteranceReason) {
+    // The empty check is also what dedupes UtteranceEnd against the
+    // speech_final that just fired for the same utterance.
+    if (this.segments.length === 0) return;
+
+    const text = this.segments.join(" ").replace(/\s+/g, " ").trim();
+    this.segments = [];
+    if (text && !this.stopped && !this.paused) {
+      this.handlers.onUtterance(text, reason);
+    }
+  }
+
+  /**
+   * Robot is about to speak. Finalize FIRST so the child's trailing words are
+   * emitted now — skipping this glues them onto the child's next answer.
+   */
+  pause() {
+    if (this.paused) return;
+    this.paused = true;
+    this.send({ type: "Finalize" });
+    this.stream?.getAudioTracks().forEach((t) => (t.enabled = false));
+    console.log("[DG] paused (mic silent, socket alive)");
+  }
+
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.segments = []; // drop anything that leaked in while the robot talked
+    this.stream?.getAudioTracks().forEach((t) => (t.enabled = true));
+    console.log("[DG] listening");
+  }
+
+  get level(): number {
+    if (!this.analyser) return 0;
+    const buf = new Uint8Array(this.analyser.frequencyBinCount);
+    this.analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.min(1, 4 * Math.sqrt(sum / buf.length));
+  }
+
+  private send(obj: Record<string, unknown>) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+  }
+
+  private stopRecorder() {
     try {
-      msg = JSON.parse(ev.data);
+      if (this.recorder && this.recorder.state !== "inactive") this.recorder.stop();
     } catch {
-      return;
+      /* ignore */
     }
-
-    if (msg.type === "UtteranceEnd") {
-      console.log("[DG] UtteranceEnd");
-      this.flush();
-      return;
-    }
-
-    if (msg.type === "SpeechStarted") {
-      console.log("[DG] SpeechStarted");
-      return;
-    }
-
-    if (msg.type !== "Results") return;
-
-    const channel = msg.channel as { alternatives?: { transcript?: string }[] } | undefined;
-    const text = channel?.alternatives?.[0]?.transcript?.trim() ?? "";
-
-    if (text || msg.is_final) {
-      console.log(`[DG] is_final=${msg.is_final} speech_final=${msg.speech_final} text="${text}"`);
-    }
-
-    if (!msg.is_final) {
-      if (text) this.handlers.onInterim?.(text);
-      return;
-    }
-
-    if (text) this.chunks.push(text);
-
-    // speech_final means Deepgram's endpointing believes the child stopped.
-    if (msg.speech_final) this.flush();
+    this.recorder = null;
   }
-
-  private flush() {
-    const text = this.chunks.join(" ").trim();
-    this.chunks = [];
-    if (text && !this.stopped) this.handlers.onUtterance(text);
-  }
-
-  /** Stop sending audio. Used while the robot is talking so it never hears itself. */
-  mute() { console.log("[DG] mic MUTED"); this.mic?.mute(); this.chunks = []; }
-  unmute() { console.log("[DG] mic live"); this.mic?.unmute(); this.chunks = []; }
-  get muted() { return this.mic?.muted ?? true; }
-  get level() { return this.mic?.getInputVolume() ?? 0; }
 
   stop() {
     this.stopped = true;
-    this.mic?.stop();
-    this.mic = null;
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: "CloseStream" }));
-      this.ws.close();
-    }
+    this.stopRecorder();
+    this.send({ type: "CloseStream" });
+    this.ws?.close();
     this.ws = null;
+    this.ctx?.close().catch(() => null);
+    this.ctx = null;
+    this.analyser = null;
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    this.segments = [];
   }
 }

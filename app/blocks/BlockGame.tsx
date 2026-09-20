@@ -68,13 +68,15 @@ export default function BlockGame() {
         log("TTS", "speaking...");
 
         // Deaf while talking. Turn-taking enforced at the audio level too.
-        listenerRef.current?.mute();
+        // pause() sends Finalize first so the child's trailing words are
+        // emitted now rather than glued onto their next answer.
+        listenerRef.current?.pause();
         setInterim("");
 
         await voiceRef.current?.speak(say);
 
         log("TTS", "finished");
-        listenerRef.current?.unmute();
+        listenerRef.current?.resume();
 
         pending = { type: "SPEECH_END" };
       }
@@ -117,8 +119,8 @@ export default function BlockGame() {
       voiceRef.current = voice;
 
       const listener = new ChildListener({
-        onUtterance: (text) => {
-          log("CHILD", text);
+        onUtterance: (text, reason) => {
+          log("CHILD", `${text}  (${reason})`);
           setInterim("");
           void send({ type: "CHILD_SAID", text });
         },
