@@ -19,6 +19,8 @@ from unitree_webrtc_connect.webrtc_driver import (
     WebRTCConnectionMethod,
 )
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
+from vision_service import VisionService
+from box_service import BoxService
 
 
 # The library runs the LAN signaling handshake with blocking sockets on the
@@ -85,6 +87,8 @@ ACTIONS = {
     "dance2": ("Dance2", "Dance2"),
     "hind_stand": ("Standup", "BackStand"),
     "handstand": ("Handstand", "HandStand"),
+    "exit_hind_stand": (None, "BackStand"),
+    "exit_handstand": (None, "HandStand"),
     "front_jump": ("FrontJump", "FrontJump"),
     "front_pounce": ("FrontPounce", "FrontPounce"),
     "front_flip": ("FrontFlip", "FrontFlip"),
@@ -104,8 +108,12 @@ controller = None
 busy = False
 last_error = ""
 motion_mode = ""
+# Only an explicit RPC API_NOT_IMPL response establishes unavailability.
+# Different modes can implement the same API differently; reconnect resets it.
+unsupported_actions = set()
 latest_jpeg = b""
 frame_at = 0.0
+camera_session = 0
 action_lock = asyncio.Lock()
 
 
@@ -166,11 +174,16 @@ async def watchdog():
 
 
 async def disconnect():
-    global robot, motion_mode, latest_jpeg
+    global robot, motion_mode, latest_jpeg, frame_at, camera_session
     stop()
+    camera_session += 1
+    vision.invalidate_camera()
+    boxes.invalidate_camera()
     old, robot = robot, None
     motion_mode = ""
     latest_jpeg = b""
+    frame_at = 0.0
+    unsupported_actions.clear()
     if old:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(old.disconnect(), timeout=5)
@@ -190,6 +203,16 @@ def reply_status(reply):
         return None
 
 
+def rpc_error(code):
+    if type(code) is not int:
+        return "No valid status code in the robot reply; outcome unknown"
+    if code == 3203:
+        return "The robot service does not implement this action (3203)"
+    if code != 0:
+        return f"The robot rejected the request (status {code})"
+    return None
+
+
 async def check_mode():
     # Motion switcher api 1001 = CheckMode; reply carries {"name": <mode>}.
     global motion_mode
@@ -204,13 +227,34 @@ async def check_mode():
 
 def sport_id(name):
     normal_key, mcf_key = ACTIONS[name]
-    if motion_mode in ("", "normal"):
+    if motion_mode == "normal":
         key, table = normal_key, SPORT_CMD
-    else:
+    elif motion_mode in ("ai", "mcf"):
         key, table = mcf_key, SPORT_CMD_MCF
+    else:
+        return None, None
     if key is None or key not in table:
         return None, None
     return table[key], key
+
+
+def action_availability(name):
+    api_id, _ = sport_id(name)
+    if not connected():
+        return {"available": False, "reason": "Connect the robot first"}
+    if motion_mode not in MOTION_MODES:
+        return {
+            "available": False,
+            "reason": "Motion mode is unknown; reconnect to check it",
+        }
+    if api_id is None:
+        return {"available": False, "reason": f"Not available in {motion_mode} mode"}
+    if (motion_mode, api_id) in unsupported_actions:
+        return {
+            "available": False,
+            "reason": "This robot service does not implement this action (3203)",
+        }
+    return {"available": True, "reason": ""}
 
 
 def encode_jpeg(frame):
@@ -225,6 +269,8 @@ def encode_jpeg(frame):
 async def read_video(track):
     # Registered with the driver's video channel; runs until the track ends.
     global latest_jpeg, frame_at
+    source_robot = robot
+    source_session = camera_session
     next_at = 0.0
     while True:
         try:
@@ -236,13 +282,25 @@ async def read_video(track):
             continue  # drop frames down to CAMERA_FPS
         next_at = now + 1 / CAMERA_FPS
         try:
-            latest_jpeg = await asyncio.to_thread(encode_jpeg, frame)
+            jpeg = await asyncio.to_thread(encode_jpeg, frame)
+            if robot is not source_robot or camera_session != source_session:
+                return
+            latest_jpeg = jpeg
             frame_at = time.monotonic()
         except Exception as exc:
             print(f"Camera frame encode failed: {exc}")
 
 
 async def after_connect():
+    # Native joystick input must be enabled before the operator can arm.
+    # connect() keeps movement disarmed and the action lock held here.
+    reply = await request(
+        RTC_TOPIC["SPORT_MOD"],
+        {"api_id": SPORT_CMD["SwitchJoystick"], "parameter": {"data": True}},
+    )
+    error = rpc_error(reply_status(reply))
+    if error:
+        raise RuntimeError(f"Could not enable native joystick: {error}")
     # Same order as dimOS: register the reader, then ask the robot for video.
     robot.video.add_track_callback(read_video)
     robot.video.switchVideoChannel(True)
@@ -257,9 +315,15 @@ async def lifespan(app):
     with contextlib.suppress(asyncio.CancelledError):
         await task
     await disconnect()
+    await vision.close()
+    await boxes.close()
 
 
 app = FastAPI(lifespan=lifespan)
+boxes = BoxService(lambda: (latest_jpeg, frame_at, camera_session), connected)
+vision = VisionService(lambda: (latest_jpeg, frame_at, camera_session), connected,
+                       box_status=boxes.status)
+app.include_router(vision.router)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=["127.0.0.1", "localhost"],
@@ -281,6 +345,12 @@ async def home():
     return html.replace("__TOKEN__", TOKEN)
 
 
+@app.get("/vision", response_class=HTMLResponse)
+async def vision_page():
+    html = Path(__file__).with_name("vision.html").read_text()
+    return HTMLResponse(html.replace("__TOKEN__", TOKEN), headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/status")
 async def status():
     return {
@@ -291,6 +361,8 @@ async def status():
         "mode": motion_mode,
         "camera": bool(latest_jpeg) and time.monotonic() - frame_at < 2,
         "error": last_error,
+        "actions": {name: action_availability(name) for name in ACTIONS},
+        "boxes": boxes.status(),
     }
 
 
@@ -355,6 +427,16 @@ async def connect():
             busy = False
 
 
+@app.get("/camera.boxes.mjpeg")
+async def camera_boxes(token: str = ""):
+    if token != TOKEN:
+        raise HTTPException(403, "Unauthorized")
+    return StreamingResponse(
+        boxes.frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.post("/api/disconnect")
 async def disconnect_api():
     if action_lock.locked():
@@ -380,7 +462,7 @@ async def arm():
     return {"armed": True}
 
 
-async def sport_command(api_id, label, timeout=5):
+async def sport_command(api_id, label, timeout=5, parameter=None):
     # Sends one SPORT_MOD request under the action lock with movement disarmed.
     global busy, last_error
     if not connected():
@@ -392,16 +474,26 @@ async def sport_command(api_id, label, timeout=5):
         busy = True
         stop()
         try:
+            options = {"api_id": api_id}
+            if parameter is not None:
+                options["parameter"] = parameter
             reply = await request(
-                RTC_TOPIC["SPORT_MOD"], {"api_id": api_id}, timeout=timeout
+                RTC_TOPIC["SPORT_MOD"], options, timeout=timeout
             )
+            code = reply_status(reply)
+            error = rpc_error(code)
+            if error:
+                if type(code) is int and code == 3203:
+                    unsupported_actions.add((motion_mode, api_id))
+                last_error = f"{label}: {error}"
+                raise HTTPException(502, last_error)
             last_error = ""
             # An RPC reply is not proof of physical movement.
             return {
                 "command": label,
                 "api_id": api_id,
                 "mode": motion_mode or "unknown",
-                "status_code": reply_status(reply),
+                "status_code": code,
                 "reply": reply,
                 "note": "Reply received; verify the robot actually moved",
             }
@@ -428,12 +520,16 @@ async def posture(name: str):
 async def action(name: str):
     if name not in ACTIONS:
         raise HTTPException(404, "Unknown action")
-    api_id, key = sport_id(name)
-    if api_id is None:
-        raise HTTPException(
-            409, f"{name} is not available in {motion_mode or 'normal'} mode"
-        )
-    return await sport_command(api_id, key)
+    api_id, _ = sport_id(name)
+    availability = action_availability(name)
+    if not availability["available"]:
+        raise HTTPException(409, availability["reason"])
+    parameter = None
+    if motion_mode in ("ai", "mcf") and name in (
+        "handstand", "hind_stand", "exit_handstand", "exit_hind_stand"
+    ):
+        parameter = {"data": not name.startswith("exit_")}
+    return await sport_command(api_id, name, parameter=parameter)
 
 
 @app.post("/api/mode/{name}")
@@ -445,6 +541,11 @@ async def set_mode(name: str):
         raise HTTPException(404, "Unknown motion mode")
     if not connected():
         raise HTTPException(409, "Robot disconnected")
+    if motion_mode == "mcf" and name in ("normal", "ai"):
+        raise HTTPException(
+            409,
+            "MCF uses the current motion service; legacy normal/AI switching is unavailable",
+        )
     if action_lock.locked():
         raise HTTPException(409, "Another operation is running")
 
@@ -500,7 +601,12 @@ async def control(ws: WebSocket):
             values = [float(data.get(k, 0)) for k in ("forward", "left", "turn")]
             if not all(math.isfinite(v) for v in values):
                 raise ValueError("Invalid movement")
-            desired = tuple(max(-0.3, min(0.3, v)) for v in values)
+            # Only forward travel gets the Fast preset; reverse, strafe and
+            # turning retain their previous 0.30 limit.
+            desired = tuple(
+                max(-0.3, min(limit, value))
+                for value, limit in zip(values, (0.6, 0.3, 0.3))
+            )
             last_input = time.monotonic()
             if not armed or busy:
                 desired = (0, 0, 0)

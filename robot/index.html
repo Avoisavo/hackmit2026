@@ -23,10 +23,17 @@
     touch-action: none;
   }
   button:active { background: #456ba4; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.selected { outline: 2px solid #7db0ff; }
+  #commandStatus { position: sticky; top: 0; z-index: 2; background: #192130; padding: 12px; border-radius: 10px; color: #b7d1ff; min-height: 1.4em; white-space: pre-wrap; }
   button.risky { background: #5a3a1e; }
   #stop { background: #b42335; width: 100%; font-size: 22px; }
-  #arm.on { background: #1f7a3a; }
+  #arm.on, #resumeDriving.on { background: #1f7a3a; }
+  #resumeRow { margin-top: 18px; padding: 14px; border: 1px solid #496486; border-radius: 10px; background: #202e43; }
+  #resumeRow.attention { outline: 3px solid #ffd166; }
+  #resumeDriving { background: #365d92; font-size: 18px; font-weight: 650; }
   #hint { color: #ffd166; min-height: 1.4em; }
+  #controlStatus { padding: 12px; border: 1px solid #846a32; border-radius: 10px; color: #ffd166; }
   #error { color: #ff8a8a; white-space: pre-wrap; }
   #cam {
     display: block;
@@ -50,21 +57,31 @@
   .panel p.small { font-size: 14px; color: #a9b4c8; margin: 6px 0; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   input { width: 100%; }
+  #controlBoxes { width: auto; margin-right: 7px; }
 </style>
 
 <h1>Go2 Control</h1>
+<p><a href="/vision" style="color:#9ed8ff">Open camera object recognition →</a></p>
 <p id="status">Loading…</p>
+<p id="controlStatus" role="status">Connecting this tab’s driving controls…</p>
+<button id="reconnectControl" onclick="reconnectControl()" hidden>Reconnect this tab</button>
 <p id="hint">Order: Connect robot → Stand up → Balance stand → Enable movement.</p>
 <p id="error"></p>
+<p id="commandStatus" role="status" aria-live="polite">Click a command once; its result appears here.</p>
+<button id="refreshSession" onclick="location.reload()" hidden>Refresh control session</button>
 
 <div class="panel">
   <h2>Camera</h2>
   <img id="cam" alt="Camera appears after Connect">
+  <label><input id="controlBoxes" type="checkbox" checked>Show labeled object boxes</label>
+  <p id="boxesStatus" class="small" role="status">Object detector loading…</p>
+  <p class="small">Drive and watch labeled camera frames here. After a refresh or focus loss,
+    click Enable movement again; refreshing never enables movement automatically.</p>
   <p class="small">Motion mode: <b id="modeName">unknown</b>
-    <button onclick="mode('normal')">Switch to Normal</button>
-    <button onclick="mode('ai')">Switch to AI</button>
-    · switch modes while the robot is lying down; it takes a few seconds.
+    <button data-mode="switch" onclick="mode('normal')">Switch to Normal</button>
+    <button data-mode="switch" onclick="mode('ai')">Switch to AI</button>
   </p>
+  <p id="modeHelp" class="small">Checking the robot’s motion service…</p>
 </div>
 
 <div class="panel">
@@ -75,9 +92,13 @@
   <button onclick="posture('lie')">Lie down</button>
   <button id="arm" onclick="arm()">Enable movement</button>
 
-  <p>Joystick strength: <span id="strength">0.10</span></p>
-  <input id="speed" type="range" min="0.05" max="0.30"
-         step="0.05" value="0.10">
+  <p>Forward strength: <span id="strength">15%</span></p>
+  <button data-preset="0.15" class="selected" onclick="setSpeed(0.15)">Slow · 15%</button>
+  <button data-preset="0.30" onclick="setSpeed(0.30)">Normal · 30%</button>
+  <button data-preset="0.60" onclick="setSpeed(0.60)">Fast · 60%</button>
+  <input id="speed" aria-label="Forward joystick strength" type="range" min="0.05" max="0.60"
+         step="0.05" value="0.15">
+  <p class="small">Reverse, strafe and turning are limited to 30%. These are joystick inputs, not metres per second.</p>
 
   <div class="pad">
     <button data-direction="left">Q · Strafe left</button>
@@ -96,40 +117,57 @@
 
 <div class="panel">
   <h2>Tricks</h2>
-  <p class="small">Robot must be standing. Every trick disarms driving first.
-    Orange ones need at least 2 m of clear, flat space and ask for confirmation.</p>
-  <button onclick="action('hello')">Hello</button>
-  <button onclick="action('stretch')">Stretch</button>
-  <button onclick="action('heart')">Heart</button>
-  <button onclick="action('content')">Content</button>
-  <button onclick="action('scrape')">Scrape</button>
-  <button onclick="action('wiggle_hips')">Wiggle hips</button>
-  <button onclick="action('sit')">Sit</button>
-  <button onclick="action('rise_sit')">Rise from sit</button>
-  <button onclick="action('dance1')">Dance 1</button>
-  <button onclick="action('dance2')">Dance 2</button>
-  <button onclick="action('recovery')">Recovery stand</button>
+  <p class="small">Click or tap a trick once—Space is only for STOP. Every trick disarms driving first.
+    Orange ones need at least 2 m of clear, flat space and ask for confirmation.
+    Grey buttons are unavailable; hover over one for the reason.</p>
+  <button data-action="hello" onclick="action('hello')">Hello</button>
+  <button data-action="stretch" onclick="action('stretch')">Stretch</button>
+  <button data-action="heart" onclick="action('heart')">Heart</button>
+  <button data-action="content" onclick="action('content')">Content</button>
+  <button data-action="scrape" onclick="action('scrape')">Scrape</button>
+  <button data-action="wiggle_hips" onclick="action('wiggle_hips')">Wiggle hips</button>
+  <button data-action="sit" onclick="action('sit')">Sit</button>
+  <button data-action="rise_sit" onclick="action('rise_sit')">Rise from sit</button>
+  <button data-action="dance1" onclick="action('dance1')">Dance 1</button>
+  <button data-action="dance2" onclick="action('dance2')">Dance 2</button>
+  <button data-action="recovery" onclick="action('recovery')">Recovery stand</button>
   <br>
-  <button class="risky" onclick="action('hind_stand', true)">Stand on hind legs</button>
-  <button class="risky" onclick="action('handstand', true)">Handstand</button>
-  <button class="risky" onclick="action('front_jump', true)">Jump forward</button>
-  <button class="risky" onclick="action('front_pounce', true)">Pounce</button>
-  <button class="risky" onclick="action('front_flip', true)">Front flip</button>
-  <button class="risky" onclick="action('back_flip', true)">Back flip</button>
-  <button class="risky" onclick="action('left_flip', true)">Left flip</button>
-  <button class="risky" onclick="action('right_flip', true)">Right flip</button>
-  <button class="risky" onclick="action('damp', true)">Damp (go limp)</button>
+  <button class="risky" data-action="hind_stand" onclick="action('hind_stand', true)">Stand on hind legs</button>
+  <button class="risky" data-action="handstand" onclick="action('handstand', true)">Handstand</button>
+  <button data-action="exit_hind_stand" onclick="action('exit_hind_stand')">Exit hind-leg stand</button>
+  <button data-action="exit_handstand" onclick="action('exit_handstand')">Exit handstand</button>
+  <button class="risky" data-action="front_jump" onclick="action('front_jump', true)">Jump forward</button>
+  <button class="risky" data-action="front_pounce" onclick="action('front_pounce', true)">Pounce</button>
+  <button class="risky" data-action="front_flip" onclick="action('front_flip', true)">Front flip</button>
+  <button class="risky" data-action="back_flip" onclick="action('back_flip', true)">Back flip</button>
+  <button class="risky" data-action="left_flip" onclick="action('left_flip', true)">Left flip</button>
+  <button class="risky" data-action="right_flip" onclick="action('right_flip', true)">Right flip</button>
+  <button class="risky" data-action="damp" onclick="action('damp', true)">Damp (go limp)</button>
+  <div id="resumeRow">
+    <p class="small">Finish or exit the trick first. For handstand or hind-leg stand, use its Exit button;
+      after Sit, use Rise from sit. Use Balance stand if needed before driving.</p>
+    <button id="resumeDriving" onclick="arm()">Resume driving</button>
+    <p id="resumeStatus" class="small">Driving paused. Release keys, click Resume driving, then hold W/A/S/D/Q/E.</p>
+  </div>
 </div>
 
-<pre id="result"></pre>
+<details><summary>Command details</summary><pre id="result"></pre></details>
 
 <script>
 const token = "__TOKEN__";
 const result = document.querySelector("#result");
+const commandStatus = document.querySelector("#commandStatus");
 const hint = document.querySelector("#hint");
 const errorBox = document.querySelector("#error");
 const armButton = document.querySelector("#arm");
+const resumeButton = document.querySelector("#resumeDriving");
+const resumeRow = document.querySelector("#resumeRow");
+const resumeStatus = document.querySelector("#resumeStatus");
+const controlStatus = document.querySelector("#controlStatus");
+const reconnectButton = document.querySelector("#reconnectControl");
 const cam = document.querySelector("#cam");
+const controlBoxes = document.querySelector("#controlBoxes");
+const boxesStatus = document.querySelector("#boxesStatus");
 const modeName = document.querySelector("#modeName");
 const held = new Set();
 // Physical key positions, so the printed W/A/S/D/Q/E labels hold on any layout.
@@ -138,60 +176,133 @@ const keyMap = {
   KeyA: "turnLeft", KeyD: "turnRight"
 };
 const DISARMED_HINT =
-  'Movement is disabled. Click "Enable movement" (robot must be in Balance stand), then hold a key or button.';
+  'Driving paused. Finish or exit the trick first. Release keys, click "Resume driving", then hold W/A/S/D/Q/E.';
 let enabled = false;
-let armEpoch = 0;   // bumps on every arm() so a stale status poll cannot undo it
+let armEpoch = 0;   // invalidates pending arm replies and status polls on state changes
+let commandEpoch = 0;
 let camConnected = false;
-let socket = new WebSocket(
-  `ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`
-);
+let sessionExpired = false;
+let boxesState = null;
+let pendingOperations = 0;
+let serverBusy = false;
+let robotConnected = null;
+let socket = null;
+let controlCloseReason = "";
+
+function controlAvailable() {
+  return !sessionExpired && socket?.readyState === WebSocket.OPEN;
+}
 
 function note(message) {
   hint.textContent = message;
 }
 
 function setEnabled(value) {
-  enabled = value;
-  if (!value) held.clear();
-  armButton.classList.toggle("on", value);
+  armEpoch++;
+  enabled = Boolean(value && controlAvailable());
+  if (!enabled) held.clear();
+  armButton.classList.toggle("on", enabled);
+  renderResume();
 }
 
-async function api(path) {
-  result.textContent = `${path} … working`;
+function renderResume() {
+  const blocked = !controlAvailable() || serverBusy || pendingOperations > 0 || robotConnected === false;
+  armButton.disabled = blocked;
+  resumeButton.disabled = blocked || enabled;
+  resumeButton.classList.toggle("on", enabled);
+  resumeButton.textContent = enabled ? "Driving enabled" : "Resume driving";
+  if (enabled) resumeRow.classList.toggle("attention", false);
+  resumeStatus.textContent = sessionExpired ? "Refresh the control session before resuming." :
+    !controlAvailable() ? "This tab cannot drive. Follow the control connection message above." :
+    enabled ? "Driving enabled. Hold a key or direction button; Space stops." :
+    serverBusy || pendingOperations > 0 ? "Command in progress. Wait, then finish or exit the trick before resuming." :
+    robotConnected === false ? "Connect the robot before resuming driving." :
+    "Driving paused. Release keys, click Resume driving, then hold W/A/S/D/Q/E.";
+}
+
+function promptResume() {
+  if (sessionExpired) return;
+  if (!controlAvailable()) { renderControlConnection(); note(controlStatus.textContent); return; }
+  note(DISARMED_HINT);
+  resumeRow.classList.toggle("attention", true);
+  const bounds = resumeRow.getBoundingClientRect();
+  if (bounds.top < 0 || bounds.bottom > window.innerHeight)
+    resumeRow.scrollIntoView({block: "nearest", inline: "nearest"});
+}
+
+async function api(path, {quiet = false} = {}) {
+  if (sessionExpired) return false;
+  if (!quiet) { pendingOperations++; renderResume(); }
+  const epoch = quiet ? commandEpoch : ++commandEpoch;
+  if (!quiet) {
+    result.textContent = `${path} … working`;
+    commandStatus.textContent = `${path.split('/').pop().replaceAll('_', ' ')}: sending…`;
+  }
   try {
     const response = await fetch("/api" + path, {
       method: "POST",
       headers: {"X-Control-Token": token}
     });
+    if (response.status === 403) {
+      expireSession();
+      return false;
+    }
     const body = await response.json();
-    result.textContent = JSON.stringify(body, null, 2);
+    if (!quiet && epoch === commandEpoch) {
+      result.textContent = JSON.stringify(body, null, 2);
+      commandStatus.textContent = response.ok
+        ? `${body.command || path.split('/').pop().replaceAll('_', ' ')}: ${body.note || 'accepted'}` +
+          (path.startsWith("/action/") ? ' Driving paused. Use "Resume driving" before W/A/S/D/Q/E.' : "")
+        : `Not completed: ${typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || body)}`;
+    }
     return response.ok;
   } catch (error) {
     setEnabled(false);
-    result.textContent = error.message;
+    if (!quiet && epoch === commandEpoch) {
+      result.textContent = error.message;
+      commandStatus.textContent = `Connection error: ${error.message}`;
+    }
     return false;
+  } finally {
+    if (!quiet) { pendingOperations--; renderResume(); }
   }
 }
 
 function transmit(message) {
-  if (socket.readyState === WebSocket.OPEN)
+  if (controlAvailable())
     socket.send(JSON.stringify(message));
 }
 
-function halt(reason) {
+function halt(reason, {automatic = false} = {}) {
   setEnabled(false);
+  if (sessionExpired) return;
+  if (automatic && !controlAvailable()) {
+    renderControlConnection();
+    note(controlStatus.textContent);
+    return;
+  }
   transmit({type: "stop"});
-  api("/stop");
+  api("/stop", {quiet: true});
   note(`Disarmed (${reason}). Click "Enable movement" to drive again.`);
 }
 
 async function arm() {
-  held.clear();
-  armEpoch++;
-  const ok = await api("/arm");
+  if (!controlAvailable() || serverBusy || pendingOperations > 0 || robotConnected === false) return;
+  setEnabled(false);
+  const epoch = armEpoch;
+  const pending = api("/arm");
+  const command = commandEpoch;
+  const ok = await pending;
+  if (sessionExpired) return;
+  if (!controlAvailable()) { setEnabled(false); renderControlConnection(); return; }
+  if (epoch !== armEpoch) {
+    if (ok) halt("enable request cancelled", {automatic: true});
+    if (command === commandEpoch) commandStatus.textContent = "Enable cancelled: movement remains disabled.";
+    return;
+  }
   setEnabled(ok);
   note(ok
-    ? "Movement enabled. Hold W/S, Q/E, A/D or a button. Space stops."
+    ? "Movement enabled. Release any held keys, then hold W/S, Q/E, A/D or a button. Space stops."
     : "Could not enable movement: connect the robot first and keep this page open.");
 }
 
@@ -215,26 +326,100 @@ function mode(name) {
 }
 
 function showCamera(on) {
-  camConnected = on;
-  cam.src = on
-    ? `/camera.mjpeg?token=${encodeURIComponent(token)}&t=${Date.now()}`
+  camConnected = on && !sessionExpired;
+  const route = controlBoxes.checked ? "/camera.boxes.mjpeg" : "/camera.mjpeg";
+  cam.src = camConnected
+    ? `${route}?token=${encodeURIComponent(token)}&t=${Date.now()}`
     : "";
+}
+
+function renderBoxesStatus() {
+  if (!controlBoxes.checked) {
+    boxesStatus.textContent = "Object boxes off · showing raw camera.";
+  } else if (sessionExpired) {
+    boxesStatus.textContent = "Refresh the control session to restore the camera.";
+  } else if (boxesState?.error) {
+    boxesStatus.textContent = `Object detector: ${boxesState.error}`;
+  } else if (Number.isFinite(boxesState?.frame_age_seconds) && boxesState.frame_age_seconds >= 3) {
+    boxesStatus.textContent = "Object boxes stale · waiting for a fresh detection frame.";
+  } else if (boxesState?.state === "running" && Number.isFinite(boxesState.frame_age_seconds)) {
+    const count = Number.isInteger(boxesState.count) ? boxesState.count : 0;
+    const fps = Number.isFinite(boxesState.fps) ? boxesState.fps.toFixed(1) : "—";
+    boxesStatus.textContent = `Object boxes · ${count} detections · ${fps} fps`;
+  } else {
+    boxesStatus.textContent = `Object detector ${boxesState?.state || "loading"} · waiting for a fresh frame.`;
+  }
+}
+
+controlBoxes.onchange = () => {
+  if (camConnected) showCamera(true);
+  renderBoxesStatus();
+};
+
+function expireSession() {
+  if (sessionExpired) return;
+  sessionExpired = true;
+  setEnabled(false);
+  commandEpoch++;
+  showCamera(false);
+  armButton.disabled = true;
+  document.querySelector("#refreshSession").hidden = false;
+  document.querySelector("#status").textContent = "Session expired · Movement disabled";
+  commandStatus.textContent = "Refresh the control session to reconnect this page.";
+  note('The server session changed. Click "Refresh control session", then enable movement again when ready.');
+  renderBoxesStatus();
+  renderControlConnection();
 }
 cam.onerror = () => {
   if (camConnected) setTimeout(() => { if (camConnected) showCamera(true); }, 2000);
 };
 
-socket.onclose = event => {
-  setEnabled(false);
-  note(event.reason
-    ? `Dashboard connection closed: ${event.reason}. Reload to reconnect.`
-    : "Dashboard connection lost. Reload to reconnect.");
-};
+function renderControlConnection() {
+  const ready = controlAvailable();
+  const connecting = socket?.readyState === WebSocket.CONNECTING;
+  reconnectButton.hidden = ready || sessionExpired;
+  reconnectButton.disabled = connecting || socket?.readyState === WebSocket.CLOSING || sessionExpired;
+  controlStatus.textContent = sessionExpired ? "The control session expired. Refresh this page." :
+    ready ? "Driving connection ready in this tab. Enable movement when ready." :
+    connecting ? "Connecting this tab’s driving controls. Movement is disabled." :
+    controlCloseReason === "Another dashboard owns control" ?
+      "Another dashboard owns control. Close the other Go2 Control tabs (including Chrome), then click Reconnect this tab. Movement is disabled here." :
+      `This tab’s driving connection is closed${controlCloseReason ? ": " + controlCloseReason : ""}. Click Reconnect this tab; then enable movement again.`;
+  renderResume();
+}
 
-document.querySelector("#speed").oninput = event => {
-  document.querySelector("#strength").textContent =
-    Number(event.target.value).toFixed(2);
-};
+function reconnectControl() {
+  if (sessionExpired || (socket && socket.readyState !== WebSocket.CLOSED)) return;
+  setEnabled(false);
+  controlCloseReason = "";
+  const current = new WebSocket(`ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`);
+  socket = current;
+  current.onopen = () => {
+    if (socket !== current) return;
+    renderControlConnection();
+    note('This tab is connected. Release keys, then click "Enable movement" when ready.');
+  };
+  current.onclose = event => {
+    if (socket !== current) return;
+    controlCloseReason = event.reason || "";
+    setEnabled(false);
+    renderControlConnection();
+    if (!sessionExpired) note(controlStatus.textContent);
+  };
+  renderControlConnection();
+}
+
+function setSpeed(value) {
+  const speed = Math.max(0.05, Math.min(0.60, Number(value)));
+  document.querySelector("#speed").value = speed;
+  document.querySelector("#strength").textContent = `${Math.round(speed * 100)}%`;
+  document.querySelectorAll("[data-preset]").forEach(button => {
+    const selected = Number(button.dataset.preset) === speed;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+}
+document.querySelector("#speed").oninput = event => setSpeed(event.target.value);
 
 document.querySelectorAll("[data-direction]").forEach(button => {
   button.onpointerdown = event => {
@@ -242,7 +427,7 @@ document.querySelectorAll("[data-direction]").forEach(button => {
     // a native menu that would swallow the release.
     if (event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
-    if (!enabled) { note(DISARMED_HINT); return; }
+    if (!enabled) { promptResume(); return; }
     button.setPointerCapture(event.pointerId);
     held.add(button.dataset.direction);
   };
@@ -262,20 +447,25 @@ window.addEventListener("keydown", event => {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   const direction = keyMap[event.code];
   if (!direction) return;
-  if (!enabled) { note(DISARMED_HINT); return; }
+  if (!enabled) { promptResume(); return; }
+  // A key held through a trick or Resume must be released and pressed again.
+  if (event.repeat && !held.has(direction)) return;
   event.preventDefault();
   held.add(direction);
 });
 window.addEventListener("keyup", event => {
+  if (event.code === "Space") { event.preventDefault(); return; }
   // macOS drops the keyup of a letter released while Cmd is held, so a
   // modifier release clears everything rather than trusting per-key pairs.
   if (["Meta", "Control", "Alt"].includes(event.key)) { held.clear(); return; }
   held.delete(keyMap[event.code]);
 });
-window.addEventListener("blur", () => halt("window lost focus"));
+window.addEventListener("blur", () => halt("window lost focus", {automatic: true}));
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) halt("tab hidden");
+  if (document.hidden) halt("tab hidden", {automatic: true});
 });
+
+reconnectControl();
 
 setInterval(() => {
   const speed = Number(document.querySelector("#speed").value);
@@ -283,13 +473,14 @@ setInterval(() => {
     enabled ? speed * (Number(held.has(positive)) - Number(held.has(negative))) : 0;
   transmit({
     type: "move",
-    forward: axis("forward", "backward"),
-    left: axis("left", "right"),
-    turn: axis("turnLeft", "turnRight")
+    forward: Math.max(-0.30, axis("forward", "backward")),
+    left: Math.max(-0.30, Math.min(0.30, axis("left", "right"))),
+    turn: Math.max(-0.30, Math.min(0.30, axis("turnLeft", "turnRight")))
   });
 }, 100);
 
 setInterval(async () => {
+  if (sessionExpired) return;
   const epoch = armEpoch;
   try {
     const response = await fetch("/api/status", {
@@ -297,22 +488,41 @@ setInterval(async () => {
       signal: AbortSignal.timeout(3000)
     });
     if (response.status === 403) {
-      setEnabled(false);
-      note("The server was restarted and this page holds the old session token. Reload this page.");
+      expireSession();
       return;
     }
     const state = await response.json();
+    if (sessionExpired) return;
     if (!("mode" in state)) {
       note("The server is running an older app.py: stop uvicorn (Ctrl+C), start it again, then reload this page.");
       return;
     }
+    serverBusy = Boolean(state.busy);
+    robotConnected = Boolean(state.connected);
+    renderResume();
     document.querySelector("#status").textContent =
       `${state.ip} · ${state.connected ? "Connected" : "Disconnected"} · ` +
       `${state.armed ? "Movement enabled" : "Disarmed"}` +
       `${state.busy ? " · Busy" : ""}` +
-      `${state.connected ? (state.camera ? " · Camera live" : " · Camera starting") : ""}`;
+      `${state.connected ? (state.camera ? " · Camera live" : " · Camera starting") : ""}` +
+      `${controlAvailable() ? "" : " · This tab cannot drive"}`;
     modeName.textContent = state.mode || "unknown";
+    const mcf = state.mode === "mcf";
+    document.querySelector("#modeHelp").textContent = mcf
+      ? "MCF is the robot’s current motion service. Trick support depends on its firmware; switching to AI does not unlock missing tricks."
+      : "Legacy mode switching: robot must be lying down. The switch takes a few seconds.";
+    document.querySelectorAll("[data-mode]").forEach(button => {
+      button.disabled = !state.connected || mcf;
+      button.title = mcf ? "MCF uses the current motion service" : "Switch only while lying down";
+    });
+    document.querySelectorAll("[data-action]").forEach(button => {
+      const availability = state.actions?.[button.dataset.action];
+      button.disabled = !state.connected || !availability?.available;
+      button.title = !state.connected ? "Connect the robot first" : availability?.reason || "Click once to send";
+    });
     if (state.connected !== camConnected) showCamera(state.connected);
+    boxesState = state.boxes || null;
+    renderBoxesStatus();
     // Ignore a poll that started before the latest arm() completed.
     if (!state.armed && epoch === armEpoch && enabled) {
       setEnabled(false);
@@ -320,7 +530,7 @@ setInterval(async () => {
     }
     errorBox.textContent = state.error || "";
   } catch {
-    halt("dashboard unreachable");
+    halt("dashboard unreachable", {automatic: true});
   }
 }, 1000);
 </script>
