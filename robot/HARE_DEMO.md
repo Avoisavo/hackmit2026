@@ -1,132 +1,121 @@
 # HARE presenter runbook
 
-Run the `dog` branch from `~/Developer/hackmit2026`:
+Start the `dog` checkout with `robot/start-control-plane.sh`, then open
+<http://127.0.0.1:8020/plane>. The page shows **AI STAGES + HB FACES V6**.
+The server reads the repository's private `.env.local`, even with plain Uvicorn.
+Explicit environment settings override that file. No credentials belong in Git.
 
-```sh
-~/Developer/hackmit2026/robot/start-control-plane.sh
-```
+The three demo buttons prepare the Mac speaker, connected/default microphone and
+Go2 camera automatically. Allow microphone access once. The current Mac defaults
+are Whammo speaker output and DJI USB microphone input. No separate Enable or
+Save connections clicks are needed. The microphone waits while HARE speaks.
 
-Open <http://127.0.0.1:8020/plane>. The dashboard includes **Demo 1**, **Demo 2**, **Demo 3**, a live system monitor,
-and manual overrides.
-The server reads the repository's ignored `.env.local`, including when started
-with a plain Uvicorn command from another directory. Explicit environment variables
-override the file. Credentials are not in Git. Only one server can use port 8020. If it is already running, use that page
-or stop that server before starting another. `/controls` retains the working
-manual controls and `/vision` retains the independent counting page.
+## Demo 1 — Count and Check
 
-## Before presenting
+HARE says **“Put five objects in front of me.”** Any kind or color of small
+movable object counts. Group them clearly in the foreground. People, hands,
+furniture, the mat, background clutter and images of objects do not count.
 
-1. Choose **Whammo 2.0 Speaker** as the Mac's sound output; the connected DJI USB
-   microphone or your chosen default input supplies speech.
-   Click **Demo 1**, **Demo 2**, or **Demo 3**. That click enables browser audio,
-   pairs this computer's speaker and microphone, and waits for Deepgram to connect
-   before starting the lesson. Allow microphone access if the browser asks. Devices
-   are reused across demos. No separate Enable or Save connections click is needed.
-2. Watch **System monitor** for the speaker, selected microphone, input level,
-   provider configuration, robot, camera, movement and face display. The mic waits
-   while HARE speaks. Ready confirms the browser connection, not physical audibility.
-   Optional sound/mic tests and reconnect buttons are under **Setup & advanced controls**.
-   **Manual override** exposes count and touch cues, plus typed answers.
-3. Demos 1 and 2 connect the Go2 camera automatically. `OPENAI_API_KEY` in
-   `.env.local` is required for camera analysis; restart after adding it. Without
-   that key or camera, use the clearly labelled count override. Deepgram and
-   ElevenLabs alone do not analyze camera frames. Counts include color and the mat.
-4. Use **Pair Arduino / face display** for the display page. It shows the face,
-   equation/count, ear wobble, and hop animation. LAN setup is described in
-   [CONTROL_PLANE.md](CONTROL_PLANE.md).
-5. Choose **Screen hops** when there is no room. **Go2 forward jumps** uses the
-   tested `front_jump` action; it is not an in-place hop. That mode requires a
-   fresh Go2 camera and the clear-path checkbox. Point HARE away from the learner
-   and allow for all six forward jumps in Run, Play. No tracking or chasing runs.
+Place four. OpenAI checks two fresh camera frames; when both counts agree with
+high confidence, HARE asks **“You have four. How many more do we need?”** Saying
+“one” encourages adding it. Place the fifth object: a new camera observation
+completes the check and shows **4 + 1 = 5**. A spoken answer alone cannot complete
+the physical task. This demo does not command robot movement.
 
-Opening a page or selecting a mode never moves the robot. Starting a demo in
-Go2 mode authorizes its fixed, bounded sequence. Each jump uses the existing
-posture/recovery logic, waits for its configured completion, and leaves driving
-disarmed. A refused command stops the sequence; there is no retry or auto-rearm.
-Timing depends on speech latency, robot recovery, and the teammate's responses;
-rehearse the 45/60/25-second targets with the actual hardware.
+If needed, use **Fallback object count** and **F**. Presenter counts are labelled
+as overrides and never claim camera verification.
 
-## 1 — Count and Check
+## Demo 2 — Come Back and Count
 
-Say: **“HARE checks a real answer, not a tap on a screen.”**
+HARE first asks for **five objects**. With no object-count progress or answer for
+**12 seconds**, it switches to the invitation game. The timeout is configurable
+from 5–120 seconds in advanced settings. It works even when camera counting is
+unavailable. The monitor distinguishes a timeout assumption from a timeout with
+recent camera evidence that no person is visible; neither measures attention or
+emotion. **L** is the presenter override for this transition.
 
-Select **Demo 1**. HARE asks for three blue blocks on the mat.
-Place two. Two fresh, agreeing camera views produce the count **2** and HARE
-asks, **“You have two. How many more do we need?”** Add one block. Only a fresh
-count of three completes the physical check, displays **2 + 1 = 3**, and cues
-one hop/jump. Saying “one” encourages placing it but never completes the task.
+The default action output for Demo 2 is **Go2 half-turn + Hello gestures**:
 
-If vision analysis fails, set **Fallback block count** to `2`, press **F**,
-then change it to `3` and press **F** after adding the third block. The display
-labels these readings **Presenter fallback** and `task_complete` remains false;
-they are not represented as camera verification.
+1. HARE makes one half-turn in place, using live IMU heading feedback, then stops.
+2. It says **“Come back! Let's play a game together. Count my hellos!”**
+3. It performs Hello twice, saying **“Hello!”** after each completed gesture.
+4. It asks **“I said hello twice. How many is that?”** Answer **“two.”**
+5. It says **“Two! Two hellos means two. Let's add three more.”**
+6. It performs three more Hello gestures and asks for the total. Answer **“five.”**
+7. It explains **“Five! Two plus three is five. Let's put five objects in front
+   of me.”** The camera checks the final group of five.
 
-## 2 — Run, Play, Teach Again
+Keep space clear for standing, turning and waving. The robot never chases anyone
+or translates during the turn. The turn stops after approximately 180 degrees
+of measured yaw, or fails if heading data goes stale, changes implausibly, or the
+20-second limit is reached. There is no blind timed-turn fallback. The robot's
+existing recovery/Hello command path is reused; a refused action stops the demo.
+These protections are tested in simulation; physical heading direction and the
+actual gesture must still be checked on this Go2.
 
-Say: **“Watch what happens when the learner stalls.”**
+Choose **Screen Hello gestures** for voice with visual gestures and no movement.
+**Caption rehearsal** also skips microphones, providers and robot connection.
 
-Select **Demo 2**. HARE asks for five red blocks. Ten seconds
-without count progress, backed by a recent block observation, changes the lesson.
-For reliable stage timing, press **L** when your teammate walks away. The log
-identifies this as a presenter cue; no emotion or diagnosis is inferred.
+## Demo 3 — Soft Hands
 
-HARE says **“You need to move. Let's move together!”**, performs one departure
-hop/jump, then says **“Catch me!”**. It stops travelling between actions and says
-**“I hopped. Count my hops!”**, then performs three hops/jumps. Say **“Three.”**
-HARE says **“Three! Now add two more.”**, performs two more, and waits for **“Five.”**
-HARE says **“Five. Same as five red blocks. Let's go back.”** The teammate returns
-and places five red blocks. The camera checks the completed mission. **F** is
-available here too. The robot does not navigate back or chase the teammate.
+Show a clear Go2 view first. Cover the Go2 camera until its image is black for
+about one second. The detector requires three or more advancing frames spanning
+at least half a second after a clear baseline. This is the staged rough-touch
+cue; do not actually hit the robot. A disconnected/stale camera, a brief flicker,
+or an image that was already black at startup cannot trigger it.
 
-Say: **“The learner never escaped the maths. The maths changed shape. Blocks became hops.”**
+HARE then says:
 
-## 3 — Soft Hands
+- **“Ouch, that was too hard. Softer, please.”**
+- **“Other people and animals feel pain too.”**
+- **“Show me soft hands now.”**
 
-Say: **“HARE is a creature. The learner practises care on HARE.”**
+After the gentle touch, press **G**. HARE says **“Perfect. Soft hands.”** Gentle
+touch remains a presenter event; there is no touch or force sensor. **B** remains
+the bump fallback. The black-camera cue is deliberately labelled as a demo cue,
+not proof of an impact or pain. Uncover the camera after the cue.
 
-Select **Demo 3**. Use your own teammate, never a judge. **B** cues the
-hard bump and makes the on-screen ears wobble. HARE says, in order:
+## OpenAI stages and HB expressions
 
-- “Ouch, that was too hard. Softer, please.”
-- “Other people and animals feel pain too.”
-- “Show me soft hands now.”
+OpenAI receives two in-memory Go2 frames and the current lesson context, including
+the latest answer. It returns an allowed stage, two object counts, confidence,
+visible-person evidence, an expression, and a short reason. The dashboard shows
+this estimate and its source. Counts require agreement and high confidence.
+Black-image checks are validated locally; model text cannot fake a bump.
+Late replies from before STOP, a phase/question change, or a presenter override
+are discarded. The model cannot invent arbitrary motion or jump lesson steps.
 
-When your teammate touches gently, press **G**. HARE says **“Perfect. Soft hands.”**
-These are presenter events; no bump/ear-touch sensors or physical ear servos are
-connected. Duplicate or out-of-order cues cannot repeat or skip the sequence.
+The implementation uses the Responses API's
+[structured output format](https://developers.openai.com/api/docs/guides/structured-outputs),
+with `store: false`, bounded requests, and server-side validation. Real camera
+frames go to OpenAI while a live demo runs; raw microphone audio goes to Deepgram,
+and HARE's speech goes to ElevenLabs. Keys never go to device pages or models.
 
-Say: **“HARE shows the effect, then gives the learner a way to fix it at once.”**
+The eight HB names are **Ready, Watching, Encourage, Thinking, Go, Celebrate,
+Rest, Soft confused**. AI choices go to the local preview, paired display pages,
+and HB's existing `/emote` endpoint. No board redeploy is needed. See
+[HB_FACE.md](HB_FACE.md) for the README's wireless setup and port checks.
+Keys **1–8** or the face switcher hold a manual expression until **Resume AI
+expressions** or the next demo. A configured server and a connected physical
+screen are separate monitor states.
 
-## Close and complete hardware fallback
+## Presenter controls
 
-Select **Closing slide** to show **“Learner walked away → hop-counting. Same
-lesson, new shape.”** The presenter cue contains the ADHD-focused statement and
-no-diagnosis qualification. Credit Devin, Codex, ElevenLabs, and Deepgram.
-This Python server uses Unitree WebRTC directly; it does not run a dimOS process.
-Do not say this server runs on dimOS unless you separately integrate that runtime.
-
-Select **Hardware backup** to show **“It sees. It moves. It cares.”** Use the
-three capability statements in the presenter cue. **Caption rehearsal** runs
-all three stories without audio providers, a robot, or microphone; captions
-advance automatically, while counts and touch events use the presenter keys.
-
-## Controls and limits
-
-| Key | Meaning |
+| Key | Action |
 | --- | --- |
-| `F` | Apply the count currently entered in Fallback block count |
-| `L` | Cue the learner walking away in the red-block mission |
-| `B` | Hard-bump presenter cue during Soft Hands |
-| `G` | Gentle-touch presenter cue after HARE requests it |
-| `Space` | STOP ALL |
+| F | Apply the visible fallback object count |
+| L | Trigger Demo 2's invitation sequence |
+| B | Trigger the staged bump fallback |
+| G | Confirm the gentle-touch presenter cue |
+| 1–8 | Hold an HB expression manually |
+| Space | STOP and disarm |
 
-Letter shortcuts do not run while typing or holding modifier keys; repeats are
-ignored. Keep the operator tab focused. STOP, focus loss, controller loss, or an
-audio failure cancels the active sequence. Hardware mode also stops on robot
-connection loss. A stale camera blocks any next physical jump even if a fallback
-count was entered. An already accepted firmware motion may still finish.
+Shortcuts do not fire while typing. Keep the dashboard focused. STOP, lost focus,
+controller loss, robot loss during physical actions, or speaker failure cancels
+the sequence. Camera loss/covering blocks physical actions. A firmware gesture
+already accepted by the robot may still finish. No action is retried automatically.
 
-The camera AI has **speak** and **listen** tools alongside its existing movement
-tools. The exact schema and dispatch map are at `/api/ai/tools` and in
-[AI_TOOLS.md](AI_TOOLS.md). The scripted demos use deterministic lesson transitions;
-the model cannot manufacture a touch event, fallback count, or physical completion.
+Closing/backup slides, component tests, the old blocks activity and tool reference
+remain in advanced controls. `/controls` retains direct driving controls;
+`/vision` retains the independent vision page. This Python server uses Unitree
+WebRTC directly and does not run a dimOS process.

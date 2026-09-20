@@ -118,8 +118,8 @@ class AirAudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.plane.speaker_output,'browser')
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app.app),base_url='http://localhost') as real:
             page=(await real.get('/plane')).text
-            for label in ('AUTOMATIC AUDIO V5','Reconnect speaker','Play speaker test tone'):
-                self.assertIn(label,page)
+            for label in ('AI STAGES + HB FACES V6','Reconnect speaker','Play speaker test tone'):
+                self.assertTrue(label in page, label)
             self.assertNotIn('Play Go2 test tone',page)
             self.assertNotIn('Sound output: Go2 built-in speaker',page)
 

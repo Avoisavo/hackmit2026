@@ -83,8 +83,8 @@ function render(state) {
   $('#goalCount').textContent = state.target;
   $('#seenCount').textContent = state.observed ?? '—';
   $('#startActivity').disabled = starting || state.running || state.busy || robot.ai?.busy || !controlReady;
-  $('#sendAnswer').disabled = !state.running || !['waiting_answer','waiting_blocks','answer_three','answer_five'].includes(state.phase);
-  $('#expression').disabled = state.running;
+  $('#sendAnswer').disabled = !state.running || !['waiting_answer','waiting_blocks','answer_two','answer_five'].includes(state.phase);
+  $('#expression').disabled = false;
   $('#expression').value = state.face;
   $('#voiceHealth').textContent = `Speaker ${state.speaker.ready ? 'ready' : 'offline'} · ${state.devices.mic.online ? 'Mic online' : 'Mic offline'}`;
   $('#speakerStatus').textContent = state.speaker.message || 'Starts automatically with a demo or sound test.';
@@ -92,10 +92,13 @@ function render(state) {
   $('#movementResult').textContent = robot.ai?.message || 'Movement is disarmed.';
   const locked = testing || state.running || state.busy || robot.ai?.busy || !controlReady;
   document.querySelectorAll('[data-test], [data-move], [data-posture], [data-trick], #testCamera').forEach(button => { button.disabled = locked; });
-  document.querySelectorAll('[data-face]').forEach(button => { button.disabled = state.running; });
-  health('#faceHealth', state.devices.face.online ? 'Display online · ' + state.face : 'Local preview · ' + state.face, 'ready');
+  document.querySelectorAll('[data-face]').forEach(button => { button.disabled = false; });
+  const board = state.face_board;
+  health('#faceHealth', `${state.face} · ${state.face_mode === 'manual' ? 'presenter override' : state.face_source || 'lesson'} · ${board?.delivered ? 'HB screen connected' : board?.online ? 'HB server up; screen pending' : state.devices.face.online ? 'Paired display online' : 'HB offline; local preview'}`, board?.delivered || state.devices.face.online ? 'ready' : 'idle');
+  $('#observerReason').textContent = state.observer?.reason || '';
+  $('#autoFace').disabled = state.face_mode !== 'manual';
   $('#keyStatus').textContent = Object.entries(state.configured).map(([name, ready]) => `${name}: ${ready ? 'configured' : 'missing'}`).join(' · ') + '. Keys stay in server memory.';
-  $('#outcome').textContent = state.task_complete ? 'Camera confirms the target number of blocks.' : state.answer_correct ? 'Correct spoken answer. The additional block has not been confirmed by the camera.' : 'A correct answer and physically placing the blocks are tracked separately.';
+  $('#outcome').textContent = state.task_complete ? 'Camera confirms the target number of objects.' : state.answer_correct ? 'Correct spoken answer. The added objects have not been confirmed by the camera.' : 'A correct answer and physically placing the objects are tracked separately.';
   const list = $('#events'); list.replaceChildren();
   for (const event of state.events) {
     const item = document.createElement('li'), type = document.createElement('b');
@@ -111,14 +114,17 @@ function renderMonitor(state) {
   const micReady = mic ? mic.active && mic.ready : state.devices.mic.online;
   health('#speakerHealth', speakerReady ? `${speaker?.playing ? 'Playing' : 'Ready'} · ${speaker ? audioSetup.outputLabel : 'Paired speaker'}` : audioMessages.speaker || 'Starts with your demo', speakerReady ? 'ready' : speaker ? 'error' : 'idle');
   health('#micHealth', micReady ? `${mic?.listener?.paused ? 'Ready · waiting' : 'Listening'} · ${audioSetup.microphoneLabel()}` : preparing ? (audioMessages.mic || 'Preparing…') : audioMessages.mic || 'Starts with your demo', micReady ? 'ready' : 'idle');
-  health('#cameraHealth', robot.camera ? 'Live Go2 camera' : robot.connected ? 'Waiting for camera' : 'Connects with Demo 1 or 2', robot.camera ? 'ready' : 'idle');
+  health('#cameraHealth', robot.camera ? 'Live Go2 camera' : robot.connected ? 'Waiting for camera' : 'Connects with your demo', robot.camera ? 'ready' : 'idle');
   health('#elevenHealth', state.configured.elevenlabs ? 'Settings loaded' : 'Missing in .env.local', state.configured.elevenlabs ? 'ready' : 'error');
   health('#deepgramHealth', micReady ? 'Connected' : state.configured.deepgram ? 'Settings loaded' : 'Missing in .env.local', micReady || state.configured.deepgram ? 'ready' : 'error');
   health('#visionHealth', state.configured.openai ? 'Camera AI configured' : 'No OpenAI key · manual count available', state.configured.openai ? 'ready' : 'idle');
-  const moving = state.running && state.phase === 'hopping' && state.demo?.motion === 'forward_jumps';
-  const motion = moving ? `Forward jump · ${state.demo.hops} completed` : robot.ai?.busy ? robot.ai.message : robot.recovering ? 'Recovering stance' : robot.busy ? 'Robot action in progress' : robot.armed ? 'Movement enabled' : 'Disarmed';
+  health('#stageHealth', state.observer ? `${state.observer.stage.replaceAll('_', ' ')} · ${state.observer.status}` : 'Starts with your demo', state.observer?.status === 'observed' ? 'ready' : 'idle');
+  health('#timeoutHealth', state.demo?.name === 'run_play' ? state.demo.adapted ? `Invitation triggered · ${state.demo.adaptation_source}` : `${state.demo.timeout_remaining}s without progress` : `Demo 2 · ${$('#stallSeconds').value || 12} seconds`);
+  const physical = state.demo?.motion === 'robot_gestures';
+  const moving = state.running && physical && ['turning','gesturing'].includes(state.phase);
+  const motion = moving ? state.phase === 'turning' ? 'Turning with heading feedback' : `Hello gesture · ${state.demo.hellos} completed` : robot.ai?.busy ? robot.ai.message : robot.recovering ? 'Recovering stance' : robot.busy ? 'Robot action in progress' : robot.armed ? 'Movement enabled' : 'Disarmed';
   health('#motionHealth', `${motion} · ${robot.stance || 'posture unknown'}`, moving || robot.armed || robot.busy ? 'active' : 'idle');
-  health('#modeHealth', `${state.demo?.motion === 'forward_jumps' ? 'Go2 forward jumps' : $('#demoMotion').value === 'forward_jumps' ? 'Go2 forward jumps selected' : 'Screen hops'} · ${robot.mode || 'motion mode unknown'}`);
+  health('#modeHealth', `${state.demo ? physical ? 'Go2 turn + Hello' : 'Screen Hello gestures' : $('#demoMotion').value === 'robot_gestures' ? 'Go2 turn + Hello selected' : 'Screen Hello gestures'} · ${robot.heading?.ready ? 'heading live' : 'heading unavailable'}`);
   $('#preparationStatus').textContent = preparationMessage;
 }
 
@@ -286,17 +292,27 @@ async function prepareDemo(name, rehearsal) {
     // No await before this call: the demo click authorizes Web Audio and mic access.
     await audioSetup.prepare({microphone: true, check});
     check();
-    if (['count_check', 'run_play'].includes(name) && !robot.connected) {
+    if (!robot.connected) {
       preparationMessage = 'Connecting Go2 camera…';
       $('#preparationStatus').textContent = preparationMessage;
       try { await request('/connect', {ip: $('#robotIp').value.trim()}); }
       catch (error) {
         check();
-        if ($('#demoMotion').value === 'forward_jumps') throw error;
+        if (name === 'run_play' && $('#demoMotion').value === 'robot_gestures') throw error;
         $('#error').textContent = 'Go2 camera unavailable. Presenter count override is available. ' + error.message;
       }
       check();
       robot = await request('/status');
+    }
+    if (name === 'run_play' && $('#demoMotion').value === 'robot_gestures') {
+      const deadline = Date.now() + 10000;
+      while ((!robot.camera || !robot.heading?.ready) && Date.now() < deadline) {
+        preparationMessage = 'Waiting for Go2 camera and heading feedback…';
+        $('#preparationStatus').textContent = preparationMessage;
+        await new Promise(resolve => setTimeout(resolve, 300));
+        check(); robot = await request('/status');
+      }
+      if (!robot.camera || !robot.heading?.ready) throw new Error('Go2 camera or heading feedback unavailable. Reconnect the robot or choose screen mode in advanced settings.');
     }
     check();
   } finally {
@@ -312,7 +328,7 @@ document.querySelectorAll('[data-demo]').forEach(button => {
     await prepareDemo(button.dataset.demo, rehearsal);
     check();
     render(await withContext('/plane/start', {demo: button.dataset.demo, rehearsal,
-      motion: rehearsal ? 'screen' : $('#demoMotion').value, clear_space: $('#clearSpace').checked}));
+      motion: rehearsal ? 'screen' : $('#demoMotion').value, stall_seconds: Number($('#stallSeconds').value || 12)}));
   });
 });
 document.querySelectorAll('[data-demo-event]').forEach(button => {
@@ -320,7 +336,7 @@ document.querySelectorAll('[data-demo-event]').forEach(button => {
 });
 $('#fallbackApply').onclick = () => demoEvent('count', {count: Number($('#fallbackCount').value)}).catch(report);
 window.addEventListener('keydown', event => {
-  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input,select,textarea,button')) return;
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input,select,textarea')) return;
   const cue = {KeyF:'count', KeyL:'learner_left', KeyB:'bump', KeyG:'gentle'}[event.code];
   if (!cue || !activity.running || !activity.demo) return;
   event.preventDefault();
@@ -339,3 +355,13 @@ $('#aiGoalForm').onsubmit = event => {
   event.preventDefault();
   runTest(() => withContext('/ai/start', {goal: $('#aiGoal').value, run_id: crypto.randomUUID()}));
 };
+
+$('#autoFace').onclick = () => request('/plane/face', {auto:true}).then(render).catch(report);
+window.addEventListener('keydown', event => {
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input,select,textarea')) return;
+  const names = ['Ready','Watching','Encourage','Thinking','Go','Celebrate','Rest','Soft confused'];
+  if (/^[1-8]$/.test(event.key)) {
+    event.preventDefault();
+    request('/plane/face', {name:names[Number(event.key)-1]}).then(render).catch(report);
+  }
+});

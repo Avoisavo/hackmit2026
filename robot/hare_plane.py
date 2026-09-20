@@ -5,32 +5,66 @@ import secrets
 from fastapi import HTTPException, Request
 
 if __package__:
-    from .control_plane import ControlPlane, body, number_answer
-    from .hare_demo import HareDemo, DEMOS
+    from .control_plane import ControlPlane, body, number_answer, EMOTES
+    from .demo_observer import BlackCameraCue, VisionError
+    from .hare_demo import HareDemo, DEMOS, COUNT_PHASES, ANSWER_PHASES
     from .ai_agent import validate_call, AgentError
 else:
-    from control_plane import ControlPlane, body, number_answer
-    from hare_demo import HareDemo, DEMOS
+    from control_plane import ControlPlane, body, number_answer, EMOTES
+    from demo_observer import BlackCameraCue, VisionError
+    from hare_demo import HareDemo, DEMOS, COUNT_PHASES, ANSWER_PHASES
     from ai_agent import validate_call, AgentError
 
 AUDIO_TOOLS = ('speak', 'listen')
 
 
 class HareControlPlane(ControlPlane):
-    def __init__(self, *, demo_motion=None, **kwargs):
+    def __init__(self, *, demo_turn=None, observer=None, face_bridge=None, **kwargs):
+        self.face_bridge = face_bridge
+        self.face_mode, self.face_source = 'auto', 'lesson'
         super().__init__(**kwargs)
         self.demo = None
-        self.demo_motion = demo_motion
+        self.demo_turn, self.observer = demo_turn, observer
+        self.black_cue = BlackCameraCue()
+        self.observer_status = {'status':'idle', 'stage':'waiting', 'reason':'Start a demo to observe the camera'}
+        self._demo_scan_signature = None
+        self.message = 'Choose Demo 1, 2 or 3. Audio and camera prepare automatically.'
         self._io = None
         self._io_task = None
         self._demo_scan_task = None
-        self._demo_scan_phase = None
         self._demo_revision = 0
-        self._demo_scan_revision = 0
         self.io_result = {'status': 'idle', 'run_id': '', 'result': None}
         self._io_seen = []
         self.router.add_api_route('/api/plane/event', self.event_api, methods=['POST'])
         self.router.add_api_route('/api/plane/call', self.audio_call_api, methods=['POST'])
+
+    @property
+    def face(self):
+        return self._face_value
+
+    @face.setter
+    def face(self, value):
+        if getattr(self, 'face_mode', 'auto') != 'manual':
+            self.select_face(value, 'lesson')
+
+    def select_face(self, value, source):
+        self._face_value, self.face_source = value, source
+        if self.face_bridge:
+            self.face_bridge.select(value, source)
+
+    async def face_api(self, request: Request):
+        data = await body(request)
+        if data.get('auto') is True:
+            self.face_mode = 'auto'
+            self.select_face('Ready' if not self.running else 'Watching', 'lesson')
+            self._next_scan = 0
+        elif data.get('name') in EMOTES:
+            self.face_mode = 'manual'
+            self.select_face(data['name'], 'presenter')
+        else:
+            raise HTTPException(400, 'Choose one of the eight HB expressions or auto=true')
+        self._demo_revision += 1
+        return self.status()
 
     @property
     def busy(self):
@@ -38,7 +72,7 @@ class HareControlPlane(ControlPlane):
 
     @property
     def requires_robot(self):
-        return self.running and (self.demo is None or self.demo.motion == 'forward_jumps')
+        return self.running and (self.demo is None or self.demo.motion == 'robot_gestures')
 
     @property
     def requires_camera(self):
@@ -46,7 +80,9 @@ class HareControlPlane(ControlPlane):
 
     def status(self):
         return {**super().status(), 'demo': self.demo.status() if self.demo else None,
-                'audio_tool': dict(self.io_result)}
+                'audio_tool': dict(self.io_result), 'observer':dict(self.observer_status),
+                'face_mode':self.face_mode, 'face_source':self.face_source,
+                'face_board':self.face_bridge.status() if self.face_bridge else None}
 
     def cancel(self, reason='Activity stopped'):
         super().cancel(reason)
@@ -58,7 +94,7 @@ class HareControlPlane(ControlPlane):
             return super().check(session_id, decision=decision)
         if not self.running or session_id != self.session_id:
             raise HTTPException(409, 'Demo stopped or replaced')
-        if self.demo.motion == 'forward_jumps':
+        if self.demo.motion == 'robot_gestures':
             self.check_context(self._context)
         else:
             self.audio_check(self._context)
@@ -79,7 +115,7 @@ class HareControlPlane(ControlPlane):
         if self.demo:
             state['demo'] = self.demo.status()
             if self.running:
-                state['listen'] = not self.speech and self.phase in ('waiting_blocks', 'answer_three', 'answer_five')
+                state['listen'] = not self.speech and self.phase in ('waiting_blocks', *ANSWER_PHASES)
             if self.running and self.demo.rehearsal:
                 state['speech'] = None
         return state
@@ -105,24 +141,27 @@ class HareControlPlane(ControlPlane):
             raise HTTPException(409, 'Stop the current activity and wait for pending work')
         name, rehearsal = data.get('demo'), data.get('rehearsal', False)
         motion = data.get('motion', 'screen')
-        if not isinstance(name, str) or name not in DEMOS or type(rehearsal) is not bool or motion not in ('screen', 'forward_jumps'):
+        if not isinstance(name, str) or name not in DEMOS or type(rehearsal) is not bool or motion not in ('screen', 'robot_gestures'):
             raise HTTPException(400, 'Choose a HARE demo and valid rehearsal/motion settings')
         if rehearsal and motion != 'screen':
             raise HTTPException(400, 'Caption rehearsal cannot command robot motion')
-        if name not in ('count_check', 'run_play'):
+        if name != 'run_play':
             motion = 'screen'
-        if motion == 'forward_jumps' and (data.get('clear_space') is not True or not self.demo_motion or not self.vision.camera_fresh()):
-            raise HTTPException(409, 'Forward jumps require a fresh camera and an operator-confirmed clear path away from the learner')
+        if motion == 'robot_gestures' and (not self.demo_turn or not self.vision.camera_fresh()):
+            raise HTTPException(409, 'Connect Go2 and wait for a fresh camera before turning and Hello gestures')
         if not rehearsal and name not in ('close', 'backup') and (not self.speaker_ready() or not self.audio.elevenlabs or not self.audio.voice_id):
             raise HTTPException(409, 'Enable the speaker and configure ElevenLabs, or select caption rehearsal')
+        stall_seconds = data.get('stall_seconds', 12)
+        if type(stall_seconds) is not int or not 5 <= stall_seconds <= 120:
+            raise HTTPException(400, 'Inactivity timeout must be 5–120 seconds')
         self.discard_finished_scan()
         self._demo_revision += 1
-        context = (self.acquire if motion == 'forward_jumps' else self.audio_acquire)(data.get('control_id'), data.get('control_epoch'))
+        context = (self.acquire if motion == 'robot_gestures' else self.audio_acquire)(data.get('control_id'), data.get('control_epoch'))
         self.vision.stop_scanning()
         self.vision.clear_observation()
         self.target = DEMOS[name]['target']
         self.vision.target_count = max(1, self.target)
-        self.vision.target_object = DEMOS[name]['color'] + ' toy blocks on the mat'
+        self.vision.target_object = 'small movable objects grouped in the foreground'
         self.vision.round_id = secrets.token_hex(8)
         self._context = context
         self.session_id = secrets.token_hex(16)
@@ -138,10 +177,48 @@ class HareControlPlane(ControlPlane):
         self._next_scan = 0
         self._pending_observation = None
         self._deadline = self.clock() + self.SESSION_SECONDS
-        self.demo = HareDemo(self, name, rehearsal, motion)
+        self.face_mode = 'auto'
+        self.black_cue = BlackCameraCue()
+        self.observer_status = {'status':'waiting', 'stage':'waiting', 'reason':'Waiting for fresh Go2 camera frames'}
+        self.demo = HareDemo(self, name, rehearsal, motion, stall_seconds=stall_seconds)
         self.demo.begin()
         self._task = asyncio.create_task(self.run(self.session_id))
         return self.status()
+
+    def scan_signature(self):
+        return (self.session_id, self.phase, self.question_id, self.speech['id'] if self.speech else None, self._demo_revision)
+
+    def apply_observation(self, result):
+        demo = self.demo
+        self.observer_status = {'status':'observed', 'stage':result['stage'], 'reason':result['reason'],
+            'confidence':result['confidence'], 'face':result['face']}
+        demo.person_visible = result['person_visible']
+        demo.person_observed_at = result['captured_at']
+        if self.face_mode == 'auto' and result['confidence'] in ('medium', 'high'):
+            self.select_face(result['face'], 'OpenAI')
+        if result['confidence'] != 'high':
+            return
+        if self.phase in COUNT_PHASES and demo.name in ('count_check', 'run_play'):
+            stable = result['scene_clear'] and result['first_count'] is not None and result['first_count'] == result['second_count']
+            if stable:
+                demo.count(result['second_count'], 'camera')
+            else:
+                demo.note = 'OpenAI count uncertain; keep objects visible or use F.'
+        # A timeout is explicit demo policy, not a claim about a child's feelings.
+        if demo.timeout_due and result['stage'] == 'learner_away' and result['person_visible'] is False:
+            demo.adapt('Inactivity timeout and a clear camera view with no person', 'camera_timeout')
+
+    def check_black_cue(self):
+        if self.demo.name != 'soft_hands' or self.demo.rehearsal or self.phase != 'await_bump':
+            return
+        if not hasattr(self.vision, 'get_frame'):
+            return
+        frame, at, session = self.vision.get_frame()
+        if self.black_cue.update(frame, at, session, fresh=self.vision.camera_fresh()):
+            self.demo.event('bump', {'source':'camera_black'})
+            self._demo_revision += 1
+            self.observer_status = {'status':'camera cue', 'stage':'camera_covered',
+                'reason':'Clear camera followed by sustained black frames; staged bump cue, not an impact measurement'}
 
     async def run(self, session_id):
         if not self.demo:
@@ -151,32 +228,40 @@ class HareControlPlane(ControlPlane):
                 self.check(session_id)
                 if self.speech and self.clock() - self._speech_at >= self.SPEECH_TIMEOUT:
                     raise HTTPException(409, 'Speech playback timed out')
-                await self.demo.tick()
+                self.check_black_cue()
                 if self._demo_scan_task and self._demo_scan_task.done():
                     try:
-                        state = self._demo_scan_task.result()
+                        result = self._demo_scan_task.result()
                         self.check(session_id)
-                        if self.phase == self._demo_scan_phase and self._demo_revision == self._demo_scan_revision:
-                            self.demo.observe(state)
-                    except HTTPException:
-                        self.demo.note = 'Camera check failed. F applies the presenter fallback count.'
+                        if self.scan_signature() == self._demo_scan_signature:
+                            if self.observer:
+                                self.apply_observation(result)
+                            else:
+                                self.demo.observe(result)
+                    except (HTTPException, VisionError):
+                        self.observer_status = {'status':'unavailable', 'stage':'uncertain', 'reason':'Camera AI check failed; manual overrides remain available'}
+                        self.demo.note = 'Camera check failed. F applies the presenter count override.'
                     finally:
                         self._demo_scan_task = None
                         self._next_scan = self.clock() + 2
-                if self.phase in ('observing', 'waiting_blocks', 'return_blocks') and not self._demo_scan_task and self.clock() >= self._next_scan:
+                await self.demo.tick()
+                if self.running and self.phase not in ('turning', 'gesturing') and not self._demo_scan_task and self.clock() >= self._next_scan:
                     if not self.demo.rehearsal and self.vision._api_key and self.vision.camera_fresh():
-                        self._demo_scan_phase = self.phase
-                        self._demo_scan_revision = self._demo_revision
-                        self._demo_scan_task = asyncio.create_task(self.vision.scan())
+                        self._demo_scan_signature = self.scan_signature()
+                        if self.observer:
+                            self._demo_scan_task = asyncio.create_task(self.observer.scan(self.demo.context()))
+                        elif self.phase in COUNT_PHASES:
+                            self._demo_scan_task = asyncio.create_task(self.vision.scan())
+                        self._next_scan = self.clock() + 2
                     else:
-                        self.demo.note = 'Camera unavailable. F applies the presenter fallback count.'
+                        self.observer_status = {'status':'waiting', 'stage':'uncertain', 'reason':'Camera or OpenAI unavailable; presenter overrides still work'}
                         self._next_scan = self.clock() + 2
                 await asyncio.sleep(0.05)
         except Exception as exc:
             if self.running and self.session_id == session_id:
                 self.stop_robot(str(exc.detail) if isinstance(exc, HTTPException) else 'Demo stopped after an interrupted operation')
         finally:
-            if self.demo and self.demo.motion == 'forward_jumps' and self.phase == 'complete' and self.session_id == session_id:
+            if self.demo and self.demo.motion == 'robot_gestures' and self.phase == 'complete' and self.session_id == session_id:
                 self.finish(self._context)
 
     def answer(self, data):
@@ -195,6 +280,7 @@ class HareControlPlane(ControlPlane):
         if not self.question_id or data.get('question_id') != self.question_id:
             raise HTTPException(409, 'This answer belongs to an old question')
         self.demo.answer(text, number_answer(text))
+        self._demo_revision += 1
         self.seen_events.append(event_id)
         self.log('learner', text)
 
@@ -211,7 +297,7 @@ class HareControlPlane(ControlPlane):
             raise HTTPException(409, 'Start a HARE demo first')
         self.validate_event(data)
         if data['event_id'] not in self.seen_events:
-            self.demo.event(data.get('event'), data)
+            self.demo.event(data.get('event'), {key:value for key,value in data.items() if key != 'source'})
             self._demo_revision += 1
             self.seen_events.append(data['event_id'])
         return self.status()

@@ -56,7 +56,7 @@ test('Demo 3 click prepares both audio devices and waits for microphone readines
   assert.equal(f.calls.filter(c=>c.path==='/plane/pair').length,2);
   assert.equal(f.calls.filter(c=>c.path==='/plane/start').length,1);
   assert.equal(f.calls.find(c=>c.path==='/plane/start').payload.demo,'soft_hands');
-  assert.equal(f.calls.some(c=>c.path==='/connect'),false);
+  assert.equal(f.calls.some(c=>c.path==='/connect'),true);
   assert.match(f.nodes['#micHealth'].textContent,/Whammo microphone/);
 });
 test('Demo 1 prepares audio then connects camera and starts the chosen demo',async()=>{

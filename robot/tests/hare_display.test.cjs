@@ -13,25 +13,25 @@ function setup(reduced=false) {
 }
 test('camera equations and presenter fallback are visibly distinguished',()=>{
   const s=setup();
-  s.render(s.root,{equation:'2 + 1 = 3',evidence:'presenter',motion:'screen',hops:1});
+  s.render(s.root,{equation:'2 + 1 = 3',evidence:'presenter',motion:'screen',hellos:1});
   assert.equal(s.nodes['[data-hare-equation]'].textContent,'2 + 1 = 3');
   assert.equal(s.nodes['[data-hare-source]'].textContent,'Presenter fallback');
-  assert.equal(s.nodes['[data-hare-hops]'].textContent,'1 screen hops');
-  s.render(s.root,{equation:'3',evidence:'camera',hops:0});
+  assert.equal(s.nodes['[data-hare-hops]'].textContent,'1 screen hellos');
+  s.render(s.root,{equation:'3',evidence:'camera',hellos:0});
   assert.equal(s.nodes['[data-hare-source]'].textContent,'Camera count');
 });
 test('repeated snapshots animate each hop or ear cue once',()=>{
   const s=setup();
-  const demo={title:'Soft Hands',effect:{id:'a',kind:'wobble'},hops:0};
+  const demo={title:'Soft Hands',effect:{id:'a',kind:'wobble'},hellos:0};
   s.render(s.root,demo);s.render(s.root,demo);
   assert.equal(s.effects.length,1);
-  s.render(s.root,{...demo,effect:{id:'b',kind:'hop'}});
+  s.render(s.root,{...demo,effect:{id:'b',kind:'wave'}});
   assert.equal(s.effects.length,2);
 });
 test('reduced motion keeps the equation and count without animation',()=>{
   const s=setup(true);
-  s.render(s.root,{equation:'3 + 2 = 5',motion:'forward_jumps',hops:5,effect:{id:'a',kind:'hop'}});
+  s.render(s.root,{equation:'3 + 2 = 5',motion:'robot_gestures',hellos:5,effect:{id:'a',kind:'wave'}});
   assert.equal(s.effects.length,0);
-  assert.equal(s.nodes['[data-hare-hops]'].textContent,'5 jumps commanded');
+  assert.equal(s.nodes['[data-hare-hops]'].textContent,'5 Hello gestures commanded');
   s.render(s.root,null);assert.equal(s.root.hidden,true);
 });

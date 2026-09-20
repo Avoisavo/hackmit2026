@@ -26,6 +26,9 @@ from unitree_webrtc_connect.webrtc_driver import (
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
 
 if __package__:
+    from .demo_motion import HeadingTracker, half_turn
+    from .face_bridge import FaceBridge
+    from .demo_observer import DemoObserver
     from .local_settings import ENV_FILE, read_settings
     from .control_plane import ROLES
     from .hare_plane import HareControlPlane as ControlPlane
@@ -35,6 +38,9 @@ if __package__:
     from .connection_health import ConnectionSupervisor, guard_heartbeat
     from .vision_service import VisionService
 else:
+    from demo_motion import HeadingTracker, half_turn
+    from face_bridge import FaceBridge
+    from demo_observer import DemoObserver
     from local_settings import ENV_FILE, read_settings
     from control_plane import ROLES
     from hare_plane import HareControlPlane as ControlPlane
@@ -92,6 +98,7 @@ class Go2Connection(UnitreeWebRTCConnection):
 
 
 LOCAL_SETTINGS = read_settings()
+heading = HeadingTracker()
 ROBOT_IP = LOCAL_SETTINGS.get("ROBOT_IP", "10.254.159.2")
 TOKEN = secrets.token_urlsafe(32)
 CAMERA_WIDTH = 960
@@ -333,6 +340,7 @@ async def watchdog():
 
 async def disconnect():
     global robot, motion_mode, latest_jpeg, frame_at, camera_session, stance, recovery_needed
+    heading.reset()
     cancel_scheduled_recovery()
     stop()
     camera_session += 1
@@ -685,6 +693,12 @@ async def after_connect():
     # Same order as dimOS: register the reader, then ask the robot for video.
     robot.video.add_track_callback(read_video)
     robot.video.switchVideoChannel(True)
+    source = robot
+    def on_heading(message):
+        if robot is source:
+            heading.update(message)
+    for topic in ('LF_SPORT_MOD_STATE', 'LOW_STATE'):
+        source.datachannel.pub_sub.subscribe(RTC_TOPIC[topic], on_heading)
     await check_mode()
     # This installation uses Go2 Air: speech is played by the paired browser.
     # Do not advertise an RTP sender as a built-in speaker on this model.
@@ -693,6 +707,7 @@ async def after_connect():
 @asynccontextmanager
 async def lifespan(app):
     task = asyncio.create_task(watchdog())
+    face_bridge.start()
     try:
         yield
     finally:
@@ -703,6 +718,7 @@ async def lifespan(app):
         await disconnect()
         await ai.close()
         await plane.close()
+        await face_bridge.close()
         await vision.close()
         await boxes.close()
 
@@ -858,10 +874,39 @@ async def demo_jump(check):
     await ai_wait(reply["remaining_seconds"], check)
 
 
+async def demo_turn(check):
+    global armed, desired, busy
+    check()
+    if not heading.status()['ready']:
+        raise HTTPException(409, 'Heading feedback unavailable; cannot start the turn')
+    if action_lock.locked():
+        raise HTTPException(409, 'Another robot action is running')
+    async with action_lock:
+        busy = True
+        stop(cancel_ai=False)
+        epoch = stop_epoch
+        try:
+            await prepare_stance(epoch)
+            check()
+            def command(forward, left, turn):
+                global desired, armed
+                desired = (forward, left, turn)
+                armed = bool(turn)
+                if not turn:
+                    disarm()
+            return await half_turn(heading.sample, command, check)
+        finally:
+            disarm()
+            busy = False
+
+
 speaker = Go2Speaker(lambda: robot, connected)
+face_bridge = FaceBridge(LOCAL_SETTINGS)
 plane = ControlPlane(vision=vision, acquire=acquire_ai, check_context=check_ai_context,
                      stop_robot=stop, gesture=lesson_gesture, finish=finish_ai,
-                     audio_acquire=acquire_audio_test, audio_check=check_audio_test, demo_motion=demo_jump, settings=LOCAL_SETTINGS)
+                     audio_acquire=acquire_audio_test, audio_check=check_audio_test,
+                     demo_turn=demo_turn, observer=DemoObserver(vision), face_bridge=face_bridge,
+                     settings=LOCAL_SETTINGS)
 app.include_router(plane.router)
 app.include_router(vision.router)
 app.add_middleware(
@@ -987,6 +1032,7 @@ async def status():
         "mode": motion_mode,
         "stance": stance,
         "camera": bool(latest_jpeg) and time.monotonic() - frame_at < 2,
+        "heading": heading.status(),
         "error": last_error,
         "last_stop_reason": last_stop_reason,
         "dashboard_connected": controller is not None,

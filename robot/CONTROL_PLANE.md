@@ -4,10 +4,11 @@ The three current demos are documented in [HARE_DEMO.md](HARE_DEMO.md).
 The original blocks activity remains available in the collapsed activity section.
 
 This isolated integration combines the Go2 backend, built-in camera counting,
-Deepgram microphone input, ElevenLabs speech output, and HB's Twinkle face.
+Deepgram microphone input, ElevenLabs speech output, and HB's face expression API.
 Audio uses the Bluetooth speaker and microphone selected on the Mac. Test the
-Whammo 2.0 speaker output first, then its microphone input. One FastAPI/Uvicorn process serves everything. The Mac and Arduino are browser
-clients. They do not need another Next.js or face backend. Parent video and
+Whammo 2.0 speaker output first, then the connected microphone input. One
+FastAPI/Uvicorn process coordinates the demos. HB keeps its existing board face
+server; no second laptop panel or Next.js server is required. Parent video and
 Insta360 are intentionally outside this version.
 
 The control plane now lives on the `dog` branch in
@@ -32,10 +33,11 @@ Python server reads `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, and
 `ELEVENLABS_VOICE_ID`. It also reads `OPENAI_API_KEY` when provided; that key is
 needed for camera analysis, not audio tests. Restart after changing the file. The dashboard has no credential entry form.
 
-`ELEVENLABS_AGENT_ID`, `NEXT_PUBLIC_ELEVENLABS_CONNECTION`, and
-`NEXT_PUBLIC_ROBOT_FACE_URL` are retained for the Next.js demo. The Python blocks
-coordinator uses ElevenLabs TTS, not a separate conversational agent, and drives
-its face via the paired face page rather than the legacy board URL.
+`ELEVENLABS_AGENT_ID` and `NEXT_PUBLIC_ELEVENLABS_CONNECTION` belong to the
+separate conversational-agent demo. This coordinator uses ElevenLabs TTS.
+`BOARD_URL` or the existing `NEXT_PUBLIC_ROBOT_FACE_URL` configures the HB face
+bridge; the local IPv4/IPv6 reverse tunnel is detected automatically. See
+[HB_FACE.md](HB_FACE.md) for the setup from HB's README.
 
 This server does not connect to or move the robot at startup. Before connecting,
 disconnect the old Go2 server / dimOS / phone app, because the robot accepts one
@@ -61,16 +63,17 @@ local YOLO weights are only needed for the advanced controls' optional boxes.
    The mic waits while HARE speaks. Only final Deepgram transcripts grade answers.
    Use **Manual override** for typed answers and presenter cues. Advanced controls
    include **Reconnect speaker** and **Reconnect microphone** after changing devices.
-4. **Pair Arduino / face display**. Open the pairing URL in the Arduino's
-   Chromium kiosk, with the ASUS display connected to the board. The device page
-   uses the same Twinkle renderer as `hb` and receives the coordinator's expression.
-   The board's old Python `server.py` is not needed for this page. The operator
-   always has a local expression preview as well.
-5. Demos 1 and 2 connect the Go2 automatically. You can also enter its IP and connect under advanced controls. Wait for **camera live** and click **Analyze blocks now** to check vision. Keep a clear view of
-   the toy blocks; the count is specifically for toy blocks, not total detections.
-6. Choose the target (default three). Optionally enable **one Hello gesture**;
-   it is off by default and needs room for the robot's existing stand/recovery
-   sequence. Click **Start blocks activity** and keep the operator tab focused.
+4. The existing HB board receives expressions automatically over its tunnel or
+   configured LAN address. Its monitor must report a connected screen, not merely
+   loaded settings. Keys 1–8 provide a manual override; Resume AI expressions
+   returns control to the model. Optional paired browser displays still work.
+5. All three demo buttons connect the Go2 camera. Demos 1 and 2 count five objects
+   of any color. OpenAI identifies the current stage, count and appropriate face.
+   The legacy Analyze blocks test remains separate under advanced controls.
+6. Demo 2 defaults to a physical half-turn and Hello gestures after 12 seconds
+   without progress. The turn requires live heading feedback; screen rehearsal
+   remains available. Demo 3 uses clear-to-black camera frames as its staged bump
+   cue, with B/G presenter fallbacks. See the current [runbook](HARE_DEMO.md).
 
 Each role supports one active device tab. Pairing it again revokes its previous
 link. Devices must be paired again after a server restart. A disconnected device

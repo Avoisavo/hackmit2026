@@ -8,7 +8,7 @@
 <p id="error" class="error" role="alert"></p>
 <nav class="demo-grid" aria-label="Demos">
 <button data-demo="count_check"><span>Demo 1</span><small>Count and Check</small></button>
-<button data-demo="run_play"><span>Demo 2</span><small>Run, Play, Teach Again</small></button>
+<button data-demo="run_play"><span>Demo 2</span><small>Come Back and Count</small></button>
 <button data-demo="soft_hands"><span>Demo 3</span><small>Soft Hands</small></button>
 </nav>
 <section class="monitor" aria-label="Live system status">
@@ -17,28 +17,31 @@
 <div class="service"><b>SPEAKER</b><span id="speakerHealth">Starts with your demo</span></div>
 <div class="service"><b>MICROPHONE</b><span id="micHealth">Starts with your demo</span><meter id="micLevel" min="0" max="1" value="0" aria-label="Local microphone level"></meter></div>
 <div class="service"><b>ROBOT</b><span id="robotHealth">Connecting dashboard…</span></div>
-<div class="service"><b>CAMERA</b><span id="cameraHealth">Connects with Demo 1 or 2</span></div>
+<div class="service"><b>CAMERA</b><span id="cameraHealth">Connects with your demo</span></div>
 <div class="service"><b>MOVEMENT</b><span id="motionHealth">Disarmed</span></div>
-<div class="service"><b>HOP OUTPUT / ROBOT MODE</b><span id="modeHealth">Screen hops</span></div>
+<div class="service"><b>ACTION OUTPUT / ROBOT MODE</b><span id="modeHealth">Go2 turn + Hello gestures</span></div>
 <div class="service"><b>ELEVENLABS · SPEECH</b><span id="elevenHealth">Checking settings…</span></div>
 <div class="service"><b>DEEPGRAM · LISTENING</b><span id="deepgramHealth">Checking settings…</span></div>
 <div class="service"><b>OPENAI · CAMERA ANALYSIS</b><span id="visionHealth">Checking settings…</span></div>
+<div class="service"><b>AI DEMO STAGE</b><span id="stageHealth">Waiting for camera</span></div>
+<div class="service"><b>INACTIVITY TIMER</b><span id="timeoutHealth">Demo 2 · 12 seconds</span></div>
 <div class="service"><b>FACE DISPLAY</b><span id="faceHealth">Local preview ready</span></div>
 </div>
 <p class="muted monitor-note">Audio uses your Mac’s selected speaker and connected microphone. “Ready” confirms the browser connection; check volume on the speaker. The mic pauses while HARE speaks.</p>
 </section>
 <section id="liveActivity" class="live-activity">
 <div class="activity-heading"><span id="activityPhase">Idle</span><p id="activityMessage" role="status">Choose a demo to begin.</p></div>
-<p id="presenterCue" class="presenter-cue"></p><p id="demoNote" class="muted"></p>
+<p id="observerReason" class="muted"></p><p id="presenterCue" class="presenter-cue"></p><p id="demoNote" class="muted"></p>
 <div id="hareDisplay" class="hare-display" hidden><div class="hare-ears"><i></i><i></i></div><strong data-hare-equation></strong><span data-hare-hops></span><small data-hare-source></small></div>
 <div class="live-grid"><canvas id="facePreview" width="1000" height="600" aria-label="HARE expression"></canvas><img id="camera" alt="Go2 camera"></div>
-<div class="counts"><div><strong id="goalCount">3</strong><span>Target blocks</span></div><div><strong id="seenCount">—</strong><span>Observed blocks</span></div></div>
+<div class="counts"><div><strong id="goalCount">5</strong><span>Target objects</span></div><div><strong id="seenCount">—</strong><span>Observed objects</span></div></div>
 <p id="outcome" class="muted"></p>
 </section>
 
 <section class="card manual-overrides"><div class="section-title"><h2>Manual override</h2><span class="muted">Space stops everything</span></div>
-<div class="row"><label>Fallback block count <input id="fallbackCount" type="number" min="0" max="20" value="2"></label><button id="fallbackApply">F · Apply fallback count</button><button data-demo-event="learner_left">L · Learner walked away</button><button data-demo-event="bump">B · Hard-bump cue</button><button data-demo-event="gentle">G · Gentle-touch cue</button></div>
-<p class="muted">Fallback counts are labelled presenter input. B and G are presenter cues, not sensor readings. Use your teammate for Soft Hands; never invite a judge to bump the robot. Keys work outside text fields.</p>
+<div class="row"><label>Fallback object count <input id="fallbackCount" type="number" min="0" max="20" value="4"></label><button id="fallbackApply">F · Apply fallback count</button><button data-demo-event="learner_left">L · Learner walked away</button><button data-demo-event="bump">B · Hard-bump cue</button><button data-demo-event="gentle">G · Gentle-touch cue</button></div>
+<p class="muted">Fallback counts are labelled presenter input. B is the bump fallback; fresh black Go2 camera frames also cue Soft Hands. G confirms the gentle touch. These are demo cues, not force readings. Use your teammate for Soft Hands; never invite a judge to bump the robot. Keys work outside text fields.</p>
+<details><summary>HB face switcher · keys 1–8</summary><div class="row"><button data-face="Ready">1 · Ready</button><button data-face="Watching">2 · Watching</button><button data-face="Encourage">3 · Encourage</button><button data-face="Thinking">4 · Thinking</button><button data-face="Go">5 · Go</button><button data-face="Celebrate">6 · Celebrate</button><button data-face="Rest">7 · Rest</button><button data-face="Soft confused">8 · Soft confused</button><button id="autoFace">Resume AI expressions</button></div><p class="muted">Choosing a face holds it until you resume AI expressions or start another demo. Sends the same expression to the HB board and local preview.</p></details>
 <details><summary>Operator answer fallback</summary><p class="muted">For checking the flow before a microphone joins. This sends a typed answer to the current question.</p>
 <form id="answerForm" class="row"><input id="answer" maxlength="300" placeholder="Child's answer" aria-label="Typed answer"><button id="sendAnswer">Submit answer</button></form></details>
 <details><summary>Manual robot movement</summary><p class="muted">These buttons move the real robot. Keep space clear. Each step lasts 0.3 seconds at 0.15 joystick input and stops automatically. A fresh camera and this focused tab are required.</p>
@@ -47,11 +50,11 @@
 <p id="movementResult" class="muted">Movement is disarmed.</p></details>
 <p><a href="/controls">Open full robot controls →</a></p></section>
 <details id="setupPanel" class="setup-panel"><summary>Setup &amp; advanced controls</summary>
-<p class="muted">Demo buttons prepare audio for you. Use these optional settings for physical jumps, caption rehearsal, component tests, and extra displays.</p>
+<p class="muted">Demo buttons prepare audio for you. Use these optional settings for Go2 actions, caption rehearsal, component tests, and extra displays.</p>
 <section class="card"><h2>Robot connection</h2><form id="connectForm" class="row"><input id="robotIp" aria-label="Robot IP" value="__ROBOT_IP__" required><button>Connect robot</button><button id="disconnect" type="button">Disconnect</button></form><p><a href="/controls">Advanced robot controls</a></p></section>
 <section class="card"><h2>Demo options</h2>
-<div class="row"><label>Hop output <select id="demoMotion"><option value="screen">Screen hops · no space needed</option><option value="forward_jumps">Go2 forward jumps · tested action</option></select></label><label><input id="clearSpace" type="checkbox"> Clear path away from learner for every forward jump</label><label><input id="rehearsal" type="checkbox"> Caption rehearsal · no audio or robot required</label></div>
-<p class="muted">Go2 mode uses forward jumps, including up to six in Run, Play. It never follows or chases a person. Screen mode animates hops. STOP / Space or leaving this window cancels the sequence.</p>
+<div class="row"><label>Demo 2 actions <select id="demoMotion"><option value="robot_gestures">Go2 half-turn + Hello gestures</option><option value="screen">Screen Hello gestures · no robot motion</option></select></label><label>Inactivity timeout (seconds) <input id="stallSeconds" type="number" min="5" max="120" value="12"></label><label><input id="rehearsal" type="checkbox"> Caption rehearsal · no audio or robot required</label></div>
+<p class="muted">Demo 2 turns the real robot and waves when Go2 actions are selected. Keep standing and turning space clear. It never chases the learner. STOP / Space or leaving this window cancels the sequence.</p>
 
 
 <div class="row"><button data-demo="close">Closing slide</button><button data-demo="backup">Hardware backup</button></div>
@@ -62,14 +65,14 @@
 <div><h3>01 / Sound</h3><button id="localSpeaker" class="primary">Reconnect speaker</button><button data-test="tone">Play speaker test tone</button><button data-test="voice">Test ElevenLabs voice</button><p id="voiceHealth" class="muted"></p><p id="speakerStatus" class="muted">Starts automatically with a demo or sound test.</p><p id="speakerMessage" class="muted"></p></div>
 <div><h3>02 / Microphone</h3><button id="localMic">Reconnect microphone</button><button data-test="microphone">Listen for 20 seconds</button><p id="micMessage" class="muted">Uses the connected/default microphone. If the browser asks, choose your connected microphone and allow access. To change an existing input, use the browser’s microphone permission menu.</p></div>
 <div><h3>03 / Camera</h3><button id="testCamera">Analyze blocks now</button><p id="cameraTestResult" class="muted">Uses the current Go2 camera and OpenAI. No movement.</p></div>
-<div><h3>04 / Screen &amp; Arduino</h3><div class="row"><button data-face="Celebrate">Happy face</button><button data-face="Thinking">Thinking face</button><button data-face="Ready">Reset face</button></div><p class="muted">Updates this preview and any paired Arduino display.</p></div>
+<div><h3>04 / Screen &amp; Arduino</h3><div class="row"><button data-face="Celebrate">Happy face</button><button data-face="Thinking">Thinking face</button><button data-face="Ready">Reset face</button></div><p class="muted">Updates this preview, the HB board over its tunnel, and any paired display.</p></div>
 </div>
 <p id="testResult" class="test-result" role="status">Choose a component to test.</p><button id="stopTest">Stop test / silence speaker</button>
 
 </section>
 
 <section class="card"><h2>Presenter tools</h2>
-<details><summary>Original blocks activity</summary><form id="activityForm"><label>Target blocks <input id="target" type="number" min="1" max="10" value="3"></label>
+<details><summary>Original blocks activity</summary><form id="activityForm"><label>Target objects <input id="target" type="number" min="1" max="10" value="3"></label>
 <label><input id="wave" type="checkbox"> Add one Go2 Hello gesture when the child succeeds</label>
 <p class="muted">The gesture uses the existing recovery sequence. Enable it only with room for the robot to stand and wave.</p>
 <button id="startActivity" class="primary">Start blocks activity</button></form></details>
@@ -77,7 +80,7 @@
 
 </section>
 <section class="card"><details><summary>Activity log</summary><ul id="events" class="log"></ul></details></section>
-<section class="card"><h2>Devices on this server</h2><p class="muted">The Mac plays ElevenLabs audio through its selected output and captures speech from the microphone selected in the browser. You can optionally pair a phone microphone or another speaker player. Arduino opens the face page on its display. Keep this operator tab focused during the activity.</p>
+<section class="card"><h2>Devices on this server</h2><p class="muted">The Mac plays ElevenLabs audio through its selected output and captures speech from the microphone selected in the browser. You can optionally pair a phone microphone or another speaker player. The HB face board connects automatically through its existing tunnel or BOARD_URL. A paired face page is optional. Keep this operator tab focused during the activity.</p>
 <label>Server address for other devices <input id="deviceOrigin" type="url" placeholder="https://your-server-name:8020"></label>
 <p class="muted">Use a trusted HTTPS address reachable from the phone. localhost links work only on this computer. Pairing a role replaces its old link.</p>
 <div class="pair-row"><div class="row"><button data-pair="mic">Pair phone microphone</button></div><input id="micLink" readonly aria-label="Microphone pairing link"></div>
@@ -85,7 +88,7 @@
 <div class="pair-row"><button data-pair="face">Pair Arduino / face display</button><input id="faceLink" readonly aria-label="Face pairing link"></div>
 </section>
 <section class="card"><h2>AI voice tools</h2><p class="muted">These use the same speak/listen functions available to the camera AI. Speaker and microphone tools work without the robot connected.</p><label>Test line <input id="toolSpeech" maxlength="400" value="Hello! I am HARE. Let's count together."></label><div class="row"><button id="toolSpeak">Call speak tool</button><button id="toolListen">Call listen tool · 10 s</button></div><p id="audioToolResult" role="status"></p>
-<details><summary>Camera AI goal</summary><form id="aiGoalForm"><label>Goal <input id="aiGoal" maxlength="500" value="Ask how many blue blocks are visible, listen to the answer, then check the camera and explain kindly. Stay still."></label><button>Start camera AI</button></form><p class="muted">Requires OpenAI, a connected Go2 camera, and this focused tab. The scripted demos above use deterministic lesson steps.</p></details></section>
+<details><summary>Camera AI goal</summary><form id="aiGoalForm"><label>Goal <input id="aiGoal" maxlength="500" value="Ask how many blue blocks are visible, listen to the answer, then check the camera and explain kindly. Stay still."></label><button>Start camera AI</button></form><p class="muted">Requires OpenAI, a connected Go2 camera, and this focused tab. The demos use OpenAI observations with validated lesson transitions.</p></details></section>
 <section class="card" id="toolMap"><div class="section-title"><div><p class="eyebrow">AI ACTION REFERENCE</p><h2>Movement tool map</h2></div><button id="downloadTools">Download tool schemas</button></div>
 <p class="muted">These are the same tools used by camera AI. The server validates every call, executes one action at a time, and stops on lost focus or connection. Download JSON for OpenAI's Responses API tools field.</p>
 <div class="table-scroll"><table><thead><tr><th>Tool</th><th>Arguments</th><th>Behavior</th></tr></thead><tbody id="toolsTable"></tbody></table></div>
@@ -95,6 +98,6 @@
 <section class="card"><details open><summary>Provider connections</summary><p id="keyStatus" class="muted">Keys stay in this server's memory. Camera frames go to OpenAI; microphone audio goes to Deepgram; robot speech goes to ElevenLabs.</p>
 <p class="muted">Settings load automatically from the repository’s private <code>.env.local</code>. Restart the server after changing that file. Keys are never sent to this page.</p></details></section>
 
-<p class="muted build-label">HARE · DEMO DASHBOARD · AUTOMATIC AUDIO V5</p>
+<p class="muted build-label">HARE · DEMO DASHBOARD · AI STAGES + HB FACES V6</p>
 </details>
 </main><script src="/plane-assets/twinkle.js"></script><script type="module" src="/plane-assets/operator.js"></script></body></html>
