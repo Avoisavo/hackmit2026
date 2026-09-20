@@ -1,3 +1,122 @@
+# HARE
+
+**H**ands-on **A**daptive **R**eal-world **E**ducation.
+
+A robot companion that runs short physical learning games. It checks a real
+answer with a camera, and it changes the activity when a learner stalls.
+
+Built with ADHD learners in mind. **It does not diagnose anything.**
+
+---
+
+## The problem
+
+Some learners struggle with long, seated lessons. A fixed lesson keeps going
+even when the learner needs help, a different challenge, or a break.
+
+Screen-based tutors do not help here. They ask a learner who already finds
+sitting still hard to sit still and tap a screen.
+
+## The solution
+
+HARE runs short physical missions with real objects on a mat. A camera checks
+the answer. When a learner stalls, HARE does not push on — it changes the shape
+of the lesson. Blocks become hops.
+
+HARE **asks** the learner what they need. It offers a hint, more time, or a
+movement mission. It never scores attention.
+
+That last point is the design rule. Looking away or moving does not reliably
+tell you whether someone is paying attention. So HARE does not guess. It asks.
+
+## Where the AI fits
+
+| Part | What it does |
+|---|---|
+| Computer vision | Counts blocks and recognises objects on the mat |
+| Speech recognition | Hears answers and requests such as "I want a break" |
+| LLM | Writes simple instructions and explains mistakes |
+| Adaptive logic | Offers a hint, changes difficulty, or swaps to a movement mission |
+
+## Why a hare, and not a dog
+
+This is a real design decision, not decoration.
+
+**The PARO principle.** PARO is a therapy robot shaped like a baby harp seal,
+used in care settings. Its designer chose a seal deliberately. People know how a
+real dog behaves, so a robot dog gets compared to a real dog and loses. Nobody
+has strong expectations of how a seal behaves, so people accept whatever the
+robot does.
+
+The same applies here. A robot dog invites a comparison it cannot win. Few
+people have firm expectations of a hare.
+
+Three more reasons:
+
+1. **Fear.** Dog fear is common in young children. Rabbit fear is rare. You will
+   demo to strangers' children.
+2. **Ears.** Long ears are the cheapest and clearest emotion display available,
+   and they read from across a room.
+3. **Four legs.** A hare has four legs and hops. The quadruped body fits it.
+
+**One thing to check before you cite PARO on a slide.** Search "PARO robot baby
+seal design rationale" and confirm the wording. Put the citation on the Devpost
+page, not in the two-minute pitch.
+
+**The name.** HARE takes its name from TWICE — "Hare Hare". In Japanese, *hare*
+(晴れ) means clear skies. Do not explain this on stage. Just say it is a hare.
+
+## The three demo cases
+
+Full script, with the face cue for every beat, is in **[DEMO.md](DEMO.md)**.
+
+| # | Case | What it proves | Time |
+|---|---|---|---|
+| 1 | **Count and Check** | HARE checks a real, physical answer | 45 s |
+| 2 | **Run, Play, Teach Again** | HARE changes the shape of the lesson | 60 s |
+| 3 | **Soft Hands** | HARE teaches care without scolding | 25 s |
+
+**1. Count and Check.** HARE asks for three blue blocks. The learner puts two.
+The camera counts two. HARE asks how many more are needed. The learner adds one.
+HARE hops, and the screen shows `2 + 1 = 3`.
+
+**2. Run, Play, Teach Again.** The learner stalls and walks away. HARE does not
+nag. It hops away and says "Catch me!", then hops three times and asks the
+learner to count the hops. The maths never stopped — it changed shape. HARE runs
+away; HARE never chases the learner.
+
+**3. Soft Hands.** The learner bumps HARE too hard. HARE says "Ouch, that was too
+hard. Softer, please. Other people and animals feel pain too. Show me soft hands
+now." Then it praises the gentle touch. HARE never scolds, and it fixes the
+behaviour now rather than asking for a promise about next time.
+
+### What HARE must never claim
+
+| Do not say | Say instead |
+|---|---|
+| "HARE detects when a child hurts an animal" | "HARE teaches soft hands and asking first" |
+| "HARE measures attention" | "HARE asks the learner what they need" |
+| "HARE detects ADHD" | "HARE is built with ADHD learners in mind" |
+| "HARE feels pain" | "HARE's ears wobble, so the learner sees the effect" |
+
+You cannot detect cruelty or attention with a camera. Do not claim it.
+
+## Quick start
+
+```sh
+# drive the face from a laptop
+export BOARD=127.0.0.1
+sh tools/panel.sh              # web control panel, keys 1-8
+sh deploy/face.sh status       # is the board alive?
+sh deploy/face.sh deploy       # push code to the board and restart it
+```
+
+Broken on demo day? Jump to **[Demo day: problems and fixes](#demo-day-problems-and-fixes)**.
+
+Board and deploy notes are in **[HANDOFF.md](HANDOFF.md)**.
+
+---
+
 # Rabbit emotion display
 
 The default display now uses the warm white rabbit design: floating eyes,
