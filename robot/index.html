@@ -63,6 +63,8 @@
 <h1>Go2 Control</h1>
 <p><a href="/vision">Open camera object recognition &amp; counting →</a></p>
 <p id="status">Loading…</p>
+<p id="controlStatus" role="status">Connecting dashboard controls…</p>
+<button id="reconnectControl" type="button" onclick="openControl()" hidden>Reconnect controls</button>
 <p id="hint">Connect robot, then hold W/A/S/D/Q/E or a direction button. Movement runs Recovery stand once, then Balance stand, before driving.</p>
 <p id="error"></p>
 
@@ -166,6 +168,8 @@ const robotIp = document.querySelector("#robotIp");
 const connectButton = document.querySelector("#connectButton");
 const disconnectButton = document.querySelector("#disconnectButton");
 const connectionStatus = document.querySelector("#connectionStatus");
+const controlStatus = document.querySelector("#controlStatus");
+const reconnectControl = document.querySelector("#reconnectControl");
 let ipEdited = false;
 let connecting = false;
 const held = new Set();
@@ -186,9 +190,14 @@ let cameraLive = false;
 let cameraSource = "";
 let boxesState = null;
 let sessionExpired = false;
-let socket = new WebSocket(
-  `ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`
-);
+let socket = null;
+let controlReady = false;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+let leaving = false;
+let requireFreshPress = false;
+let robotConnected = null;
+let statusPending = false;
 
 function note(message) {
   hint.textContent = message;
@@ -230,22 +239,32 @@ async function api(path, payload) {
 }
 
 function transmit(message) {
-  if (socket.readyState === WebSocket.OPEN)
+  if (controlReady && socket?.readyState === WebSocket.OPEN)
     socket.send(JSON.stringify(message));
 }
 
-function halt(reason) {
+function clearMovement() {
   haltCount++;
   armEpoch++;
   commandInFlight = false;
   autoEnable = false;
   setEnabled(false);
-  transmit({type: "stop"});
-  api("/stop");
+  requireFreshPress = true;
+}
+
+function halt(reason) {
+  clearMovement();
+  if (controlReady) transmit({type: "stop"});
+  // Background events from a rejected/closed tab must not stop its owner.
+  if (controlReady || reason === "STOP pressed") api("/stop");
   note(`Disarmed (${reason}). Press a drive key to enable movement again.`);
 }
 
 function arm() {
+  if (!controlReady || robotConnected === false || sessionExpired) {
+    note("Wait for the robot and dashboard controls to reconnect, then press a fresh drive key.");
+    return Promise.resolve(false);
+  }
   if (arming) return arming;
   if (commandInFlight) return Promise.resolve(false);
   armEpoch++;
@@ -277,6 +296,10 @@ function autoArm() {
 }
 
 async function command(path, payload) {
+  if (!controlReady && path !== "/connect" && path !== "/disconnect") {
+    note("Reconnect this tab's controls before sending a command.");
+    return false;
+  }
   const operation = ++haltCount;
   armEpoch++;
   commandInFlight = true;
@@ -384,16 +407,42 @@ cam.onerror = () => {
   if (camConnected) setTimeout(() => { if (camConnected) showCamera(true); }, 2000);
 };
 
-socket.onclose = event => {
-  haltCount++;
-  armEpoch++;
-  autoEnable = false;
-  commandInFlight = false;
-  setEnabled(false);
-  note(event.reason
-    ? `Dashboard connection closed: ${event.reason}. Reload to reconnect.`
-    : "Dashboard connection lost. Reload to reconnect.");
-};
+function openControl() {
+  if (sessionExpired || leaving || (socket && socket.readyState < 2)) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  controlReady = false;
+  reconnectControl.hidden = true;
+  controlStatus.textContent = "Connecting dashboard controls… Movement is disarmed.";
+  const candidate = new WebSocket(
+    `ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`
+  );
+  socket = candidate;
+  candidate.onmessage = event => {
+    if (socket !== candidate || sessionExpired || leaving) return;
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message.type !== "ready") return;
+    controlReady = true;
+    reconnectAttempts = 0;
+    controlStatus.textContent = "Dashboard controls connected.";
+  };
+  candidate.onclose = event => {
+    if (socket !== candidate) return;
+    controlReady = false;
+    clearMovement();
+    if (sessionExpired || leaving) return;
+    if (event.code === 1008) {
+      controlStatus.textContent = event.reason || "Control session rejected. Reload this page.";
+      reconnectControl.hidden = false;
+      return;
+    }
+    const delay = Math.min(1000 * 2 ** reconnectAttempts++, 10000);
+    controlStatus.textContent = `Dashboard connection lost. Reconnecting in ${delay / 1000}s; movement is disarmed.`;
+    reconnectTimer = setTimeout(openControl, delay);
+  };
+}
+openControl();
 
 document.querySelectorAll("[data-direction]").forEach(button => {
   button.onpointerdown = event => {
@@ -402,6 +451,7 @@ document.querySelectorAll("[data-direction]").forEach(button => {
     if (event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
     button.setPointerCapture(event.pointerId);
+    requireFreshPress = false;
     held.add(button.dataset.direction);
     autoArm();
   };
@@ -423,6 +473,8 @@ window.addEventListener("keydown", event => {
   const direction = keyMap[event.code];
   if (!direction) return;
   event.preventDefault();
+  if (event.repeat && requireFreshPress) return;
+  requireFreshPress = false;
   held.add(direction);
   autoArm();
 });
@@ -433,6 +485,16 @@ window.addEventListener("keyup", event => {
   held.delete(keyMap[event.code]);
 });
 window.addEventListener("blur", () => halt("window lost focus"));
+window.addEventListener("pagehide", () => {
+  leaving = true;
+  halt("page left");
+  clearTimeout(reconnectTimer);
+  socket?.close();
+});
+window.addEventListener("pageshow", () => {
+  leaving = false;
+  if (!sessionExpired) openControl();
+});
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) halt("tab hidden");
 });
@@ -449,6 +511,8 @@ setInterval(() => {
 }, 100);
 
 setInterval(async () => {
+  if (statusPending || sessionExpired || leaving) return;
+  statusPending = true;
   const epoch = armEpoch;
   try {
     const response = await fetch("/api/status", {
@@ -456,25 +520,33 @@ setInterval(async () => {
       signal: AbortSignal.timeout(3000)
     });
     if (response.status === 403) {
-      setEnabled(false);
+      clearMovement();
       sessionExpired = true;
+      controlReady = false;
+      clearTimeout(reconnectTimer);
+      socket?.close();
+      controlStatus.textContent = "Server restarted. Reload this page to reconnect controls.";
       showCamera(false);
       renderBoxesStatus();
       note("The server was restarted and this page holds the old session token. Reload this page.");
       return;
     }
+    if (!response.ok) throw new Error("Status request failed");
     const state = await response.json();
     if (!("mode" in state)) {
       note("The server is running an older app.py: stop uvicorn (Ctrl+C), start it again, then reload this page.");
       return;
     }
     document.querySelector("#status").textContent =
-      `${state.ip} · ${connecting ? "Connecting" : state.connected ? "Connected" : "Disconnected"} · ` +
+      `${state.ip} · ${connecting ? "Connecting" : state.reconnecting ? "Reconnecting" : state.connected ? "Connected" : "Disconnected"} · ` +
       `${state.armed ? "Movement enabled" : "Disarmed"}` +
       `${state.connected ? " · " + (state.stance || "unknown").replace("_", " ") : ""}` +
       `${state.busy ? " · Busy" : ""}` +
       `${state.connected ? (state.camera ? " · Camera live" : " · Camera starting") : ""}`;
     modeName.textContent = state.mode || "unknown";
+    if (robotConnected === true && !state.connected) clearMovement();
+    robotConnected = state.connected;
+    if (!connecting && state.connection_message) connectionStatus.textContent = state.connection_message;
     if (!ipEdited && !connecting && document.activeElement !== robotIp) {
       robotIp.value = state.ip;
     }
@@ -495,7 +567,8 @@ setInterval(async () => {
       } else if (!state.armed && enabled) {
         armEpoch++;
         setEnabled(false);
-        note('The server disarmed movement (heartbeat gap or stop). Press a drive key to resume.');
+        requireFreshPress = true;
+        note(`${state.last_stop_reason || 'The server disarmed movement'}. Release keys, then press again to resume.`);
       } else if (autoEnable && !state.armed && !state.recovering) {
         autoEnable = false;
         note(state.error || "Recovery stopped. Press a drive key to enable movement again.");
@@ -504,6 +577,8 @@ setInterval(async () => {
     errorBox.textContent = state.error || "";
   } catch {
     halt("dashboard unreachable");
+  } finally {
+    statusPending = false;
   }
 }, 1000);
 </script>

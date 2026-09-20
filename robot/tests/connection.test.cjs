@@ -28,13 +28,14 @@ function dashboard() {
     static OPEN = 1;
     readyState = 1;
     send() {}
+    close() { this.readyState = 3; this.onclose?.({code: 1000}); }
   }
   const ui = {requests, state, document, elements};
   ui.connectResponse = async () => ({connected: true});
   const context = vm.createContext({
     document, WebSocket, AbortSignal, location: {host: 'localhost'},
     window: {addEventListener: (name, fn) => { listeners[name] = fn; }},
-    setInterval: (fn, delay) => intervals.set(delay, fn), setTimeout,
+    setInterval: (fn, delay) => intervals.set(delay, fn), setTimeout, clearTimeout,
     fetch: async (url, options) => {
       requests.push({url, options});
       const body = url === '/api/status' ? {...state}
@@ -43,6 +44,7 @@ function dashboard() {
     },
   });
   vm.runInContext(script, context);
+  vm.runInContext('socket.onmessage({data: JSON.stringify({type: "ready"})})', context);
   ui.run = code => vm.runInContext(code, context);
   ui.poll = intervals.get(1000);
   ui.submit = () => elements.get('#connectionForm').onsubmit({preventDefault() {}});

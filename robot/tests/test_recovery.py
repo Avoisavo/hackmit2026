@@ -369,12 +369,12 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             try:
                 return next(messages)
             except StopIteration:
-                raise RuntimeError("Test socket closed")
+                raise app.WebSocketDisconnect()
 
         socket = SimpleNamespace(
             headers={"host": "127.0.0.1:8010", "origin": "http://127.0.0.1:8010"},
             query_params={"token": app.TOKEN}, accept=AsyncMock(), close=AsyncMock(),
-            receive_json=receive,
+            receive_json=receive, send_json=AsyncMock(),
         )
         await app.control(socket)
         self.assertEqual(observed[1:], [(1.0, -1.0, 0.5), (1.0, -1.0, 1.0), (0, 0, 0)])

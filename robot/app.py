@@ -3,6 +3,7 @@ import contextlib
 import html
 import io
 import json
+import logging
 import math
 import os
 import secrets
@@ -13,7 +14,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
@@ -26,9 +27,11 @@ from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
 
 if __package__:
     from .box_service import BoxService
+    from .connection_health import ConnectionSupervisor, guard_heartbeat
     from .vision_service import VisionService
 else:
     from box_service import BoxService
+    from connection_health import ConnectionSupervisor, guard_heartbeat
     from vision_service import VisionService
 
 
@@ -50,9 +53,14 @@ def _bounded_local_request(path, body=None, headers=None):
 
 
 unitree_auth.make_local_request = _bounded_local_request
+logger = logging.getLogger(__name__)
 
 
 class Go2Connection(UnitreeWebRTCConnection):
+    async def connect(self):
+        await super().connect()
+        guard_heartbeat(self.datachannel.heartbeat)
+
     async def get_answer_from_local_peer(self, pc, ip):
         offer = pc.localDescription
         payload = json.dumps(
@@ -193,6 +201,7 @@ desired = (0.0, 0.0, 0.0)
 controller = None
 busy = False
 last_error = ""
+last_stop_reason = ""
 motion_mode = ""
 latest_jpeg = b""
 frame_at = 0.0
@@ -228,6 +237,24 @@ def connected():
         return False
 
 
+def transport_state():
+    pc = getattr(robot, "pc", None)
+    channel = getattr(getattr(robot, "datachannel", None), "channel", None)
+    return {
+        "peer": getattr(pc, "connectionState", "closed"),
+        "ice": getattr(pc, "iceConnectionState", "closed"),
+        "data_channel": getattr(channel, "readyState", "closed"),
+    }
+
+
+def record_send_error(exc):
+    global last_error
+    message = f"Robot command send failed: {type(exc).__name__}"
+    if last_error != message:
+        logger.warning(message, exc_info=True)
+    last_error = message
+
+
 def send_velocity(forward=0.0, left=0.0, turn=0.0):
     # Matches dimOS's WebRTC joystick mapping.
     # These are joystick inputs, NOT calibrated metres/second.
@@ -242,12 +269,19 @@ def disarm():
     global armed, desired
     armed = False
     desired = (0.0, 0.0, 0.0)
-    send_velocity()
+    try:
+        send_velocity()
+    except Exception as exc:
+        # A closing data channel can throw even after connected() succeeded.
+        # Do not let a failed zero send kill the watchdog or abort disconnect.
+        record_send_error(exc)
 
 
-def stop():
-    global stop_epoch
+def stop(reason=""):
+    global stop_epoch, last_stop_reason
     stop_epoch += 1
+    if reason:
+        last_stop_reason = reason
     cancel_scheduled_recovery()
     disarm()
 
@@ -262,19 +296,18 @@ def recovering():
 
 
 async def watchdog():
-    global last_error
     while True:
         try:
             # Missing browser heartbeats disarm movement.
-            if not connected() or (
-                (armed or recovering()) and time.monotonic() - last_input > 0.3
-            ):
-                stop()
+            if not connected():
+                stop("Robot link unavailable")
+            elif (armed or recovering()) and time.monotonic() - last_input > 0.3:
+                stop("Dashboard heartbeat missed; movement stopped")
             else:
                 send_velocity(*(desired if armed else (0, 0, 0)))
         except Exception as exc:
-            last_error = str(exc)
-            stop()
+            record_send_error(exc)
+            stop("Robot command transport failed; movement stopped")
         await asyncio.sleep(0.05)
 
 
@@ -632,16 +665,32 @@ async def after_connect():
 @asynccontextmanager
 async def lifespan(app):
     task = asyncio.create_task(watchdog())
-    yield
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
-    await disconnect()
-    await vision.close()
-    await boxes.close()
+    try:
+        yield
+    finally:
+        await connection_watch.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await disconnect()
+        await vision.close()
+        await boxes.close()
+
+
+def on_robot_link_lost():
+    global stance, recovery_needed
+    stop("Robot link lost; movement stopped")
+    logger.warning("Robot link lost: %s", transport_state())
+    stance = "unknown"
+    recovery_needed = True
+    vision.invalidate_camera()
+    boxes.invalidate_camera()
 
 
 app = FastAPI(lifespan=lifespan)
+connection_watch = ConnectionSupervisor(
+    connected, lambda: action_lock.locked(), lambda: open_robot_connection(), on_robot_link_lost,
+)
 boxes = BoxService(lambda: (latest_jpeg, frame_at, camera_session), connected)
 vision = VisionService(lambda: (latest_jpeg, frame_at, camera_session), connected,
                        box_status=boxes.status)
@@ -687,6 +736,11 @@ async def status():
         "stance": stance,
         "camera": bool(latest_jpeg) and time.monotonic() - frame_at < 2,
         "error": last_error,
+        "last_stop_reason": last_stop_reason,
+        "dashboard_connected": controller is not None,
+        "reconnecting": connection_watch.reconnecting,
+        "connection_message": connection_watch.message,
+        "transport": transport_state(),
         "boxes": boxes.status(),
     }
 
@@ -732,6 +786,15 @@ async def camera_boxes(token: str = ""):
 
 @app.post("/api/connect")
 async def connect(options: ConnectOptions | None = None):
+    if action_lock.locked() and not connection_watch.reconnecting:
+        raise HTTPException(409, "Another operation is running")
+    await connection_watch.stop()
+    result = await open_robot_connection(options)
+    connection_watch.start()
+    return result
+
+
+async def open_robot_connection(options: ConnectOptions | None = None):
     global robot, busy, last_error, ROBOT_IP
     if action_lock.locked():
         raise HTTPException(409, "Another operation is running")
@@ -756,6 +819,12 @@ async def connect(options: ConnectOptions | None = None):
             stop()
             await after_connect()
             return {"connected": True, "ip": ROBOT_IP, "mode": motion_mode}
+        except asyncio.CancelledError:
+            # Explicit Disconnect or shutdown can cancel a reconnect handshake.
+            # Release the partially initialized peer before dropping the lock.
+            robot = conn
+            await disconnect()
+            raise
         except Exception as exc:
             reason = str(exc) or type(exc).__name__
             last_error = (
@@ -772,8 +841,9 @@ async def connect(options: ConnectOptions | None = None):
 
 @app.post("/api/disconnect")
 async def disconnect_api():
-    if action_lock.locked():
+    if action_lock.locked() and not connection_watch.reconnecting:
         raise HTTPException(409, "Another operation is running")
+    await connection_watch.stop()
     async with action_lock:
         await disconnect()
     return {"connected": False}
@@ -781,7 +851,7 @@ async def disconnect_api():
 
 @app.post("/api/stop")
 async def stop_api():
-    stop()
+    stop("STOP requested")
     return {"armed": False, "note": "Stop requested; verify physically"}
 
 
@@ -899,8 +969,9 @@ async def control(ws: WebSocket):
         return
 
     controller = ws
-    stop()
+    stop("Dashboard connected; movement is disarmed")
     try:
+        await ws.send_json({"type": "ready"})
         while True:
             data = await ws.receive_json()
             if data.get("type") == "stop":
@@ -917,8 +988,11 @@ async def control(ws: WebSocket):
             last_input = time.monotonic()
             if not armed or busy:
                 desired = (0, 0, 0)
+    except WebSocketDisconnect:
+        logger.info("Dashboard socket disconnected; robot connection retained")
     except Exception:
-        pass
+        logger.warning("Dashboard socket failed", exc_info=True)
     finally:
-        stop()
-        controller = None
+        if controller is ws:
+            stop("Dashboard socket disconnected; movement stopped")
+            controller = None

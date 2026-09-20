@@ -11,11 +11,14 @@ function dashboard() {
   const elements = new Map();
   const listeners = {};
   const intervals = new Map();
+  const timers = new Map();
+  const sockets = [];
+  let timerId = 0;
   const sent = [];
   const requests = [];
   const state = {connected: true, armed: false, recovering: true,
     mode: 'normal', stance: 'after_trick', error: ''};
-  const ui = {state, sent, requests};
+  const ui = {state, sent, requests, timers, sockets};
   const response = body => ({ok: true, status: 200, json: async () => body});
   ui.statusResponse = async () => response({...state});
   ui.commandResponse = async url => response(url.startsWith('/api/action/')
@@ -36,25 +39,119 @@ function dashboard() {
   class WebSocket {
     static OPEN = 1;
     readyState = 1;
+    constructor() { sockets.push(this); }
     send(message) { sent.push(JSON.parse(message)); }
+    close() { this.readyState = 3; this.onclose?.({code: 1000}); }
   }
   const context = vm.createContext({
     document, WebSocket, AbortSignal, location: {host: 'localhost'},
     window: {addEventListener: (name, fn) => { listeners[name] = fn; }},
-    setInterval: (fn, delay) => intervals.set(delay, fn), setTimeout,
+    setInterval: (fn, delay) => intervals.set(delay, fn),
+    setTimeout: (fn, delay) => { timers.set(++timerId, {fn, delay}); return timerId; },
+    clearTimeout: id => timers.delete(id),
     fetch: async url => {
       requests.push(url);
       return url === '/api/status' ? ui.statusResponse() : ui.commandResponse(url);
     },
   });
   vm.runInContext(script, context);
+  vm.runInContext('socket.onmessage({data: JSON.stringify({type: "ready"})})', context);
   ui.run = code => vm.runInContext(code, context);
   ui.poll = intervals.get(1000);
   ui.move = intervals.get(100);
-  ui.key = (name, code) => listeners[name]({code, preventDefault() {}});
+  ui.key = (name, code, options = {}) => listeners[name]({code, preventDefault() {}, ...options});
   ui.blur = () => listeners.blur();
+  ui.closeSocket = (code = 1006) => {
+    const socket = sockets.at(-1);
+    socket.readyState = 3;
+    socket.onclose({code, reason: code === 1008 ? 'Another dashboard owns control' : ''});
+  };
+  ui.retry = () => {
+    const [id, {fn}] = timers.entries().next().value;
+    timers.delete(id);
+    fn();
+  };
+  ui.ready = () => sockets.at(-1).onmessage({data: JSON.stringify({type: 'ready'})});
   return ui;
 }
+
+test('socket loss reconnects with zero input and requires a fresh key after ownership is confirmed', async () => {
+  const ui = dashboard();
+  await ui.run('arm()');
+  ui.key('keydown', 'KeyW');
+  ui.closeSocket();
+  assert.equal(ui.run('enabled'), false);
+  assert.equal(ui.run('held.size'), 0);
+  assert.equal(ui.timers.size, 1);
+  assert.equal([...ui.timers.values()][0].delay, 1000);
+  const armsBefore = ui.requests.filter(url => url === '/api/arm').length;
+  ui.retry();
+  assert.equal(ui.sockets.length, 2);
+  await ui.run('arm()');
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, armsBefore);
+  ui.ready();
+  ui.key('keydown', 'KeyW', {repeat: true});
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 0);
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, armsBefore);
+  ui.key('keydown', 'KeyW', {repeat: false});
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, armsBefore + 1);
+});
+
+test('a rejected second tab cannot stop or arm the owning dashboard through background events', async () => {
+  const ui = dashboard();
+  ui.closeSocket(1008);
+  assert.equal(ui.timers.size, 0);
+  ui.blur();
+  await ui.run('arm()');
+  assert.equal(ui.requests.length, 0);
+  assert.equal(ui.run('reconnectControl.hidden'), false);
+  ui.key('keydown', 'Space');
+  assert.deepEqual(ui.requests, ['/api/stop']);
+});
+
+test('socket recovery discards an old in-flight arm result', async () => {
+  const ui = dashboard();
+  let finish;
+  ui.commandResponse = () => new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({armed: true})}); });
+  const arm = ui.run('arm()');
+  ui.closeSocket();
+  ui.retry();
+  ui.ready();
+  finish();
+  await arm;
+  assert.equal(ui.run('enabled'), false);
+});
+
+test('robot transport recovery never replays a held drive key', async () => {
+  const ui = dashboard();
+  await ui.poll();
+  await ui.run('arm()');
+  ui.key('keydown', 'KeyW');
+  ui.state.connected = false;
+  ui.state.reconnecting = true;
+  await ui.poll();
+  assert.equal(ui.run('enabled'), false);
+  const requests = ui.requests.filter(url => url === '/api/arm').length;
+  Object.assign(ui.state, {connected: true, reconnecting: false, armed: false});
+  await ui.poll();
+  ui.key('keydown', 'KeyW', {repeat: true});
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 0);
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, requests);
+});
+
+test('server restart cancels retries instead of reconnecting with an expired token', async () => {
+  const ui = dashboard();
+  ui.closeSocket();
+  assert.equal(ui.timers.size, 1);
+  ui.statusResponse = async () => ({status: 403, ok: false});
+  await ui.poll();
+  assert.equal(ui.timers.size, 0);
+  ui.run('openControl()');
+  assert.equal(ui.sockets.length, 1);
+  assert.equal(ui.run('controlReady'), false);
+});
 
 test('object boxes share the driving camera and toggling never changes movement', async () => {
   const ui = dashboard();
@@ -161,7 +258,7 @@ test('a refused trick cannot authorize automatic enabling', async () => {
   assert.equal(ui.run('enabled'), false);
 });
 
-test('an older disarmed status cannot undo completed automatic enabling', async () => {
+test('status polls never overlap, and the next completed poll enables after recovery', async () => {
   const ui = dashboard();
   await ui.run("action('hello')");
   const oldResponse = await ui.statusResponse();
@@ -170,8 +267,22 @@ test('an older disarmed status cannot undo completed automatic enabling', async 
   const stalePoll = ui.poll();
   ui.statusResponse = async () => ({ok: true, json: async () => ({...ui.state, armed: true})});
   await ui.poll();
+  assert.equal(ui.requests.filter(url => url === '/api/status').length, 1);
   finish();
   await stalePoll;
+  await ui.poll();
+  assert.equal(ui.run('enabled'), true);
+});
+
+test('a status reply started before arming cannot undo the new arm', async () => {
+  const ui = dashboard();
+  const oldResponse = await ui.statusResponse();
+  let finish;
+  ui.statusResponse = () => new Promise(resolve => { finish = () => resolve(oldResponse); });
+  const poll = ui.poll();
+  await ui.run('arm()');
+  finish();
+  await poll;
   assert.equal(ui.run('enabled'), true);
 });
 

@@ -89,6 +89,32 @@ Movement disarms automatically if the browser stops sending heartbeats for
 within reach of the robot's physical remote or power switch; a software
 stop is not a guarantee.
 
+## Connection recovery
+
+**Connected · Disarmed** means the robot link is still up but driving has
+stopped. The hint names the stop reason. Losing focus or missing dashboard
+heartbeats still stops movement immediately.
+
+If the dashboard socket drops, this tab reconnects automatically with delays
+from 1 to 10 seconds. It waits for the server to confirm that it owns controls.
+A second tab that is refused ownership cannot arm or stop the owning tab through
+its background events; the explicit STOP button remains global. Close the other
+controls tab and click **Reconnect controls** to take ownership.
+
+If an established robot WebRTC link drops, the server disarms, cancels pending
+automatic recovery, and gives the existing peer 3 seconds to recover. It then
+tries a fresh connection up to three times, with 2 and 5 seconds between failed
+attempts. Reconnection restores camera and telemetry while movement remains
+disarmed. Release any held movement keys, then press again to drive.
+**Disconnect** cancels pending robot reconnect attempts and closes a partially
+connected peer. Exhausted retries require **Connect robot** again.
+
+The terminal logs failed sends and robot transport state at a drop. Authenticated
+`GET /api/status` includes `transport` (peer, ICE and data-channel states),
+`dashboard_connected`, `reconnecting`, `connection_message` and `last_stop_reason`.
+A failed keepalive or zero-input send no longer terminates the heartbeat/watchdog.
+After restarting the server, reload the page to obtain its new session token.
+
 ## Camera, motion mode, tricks
 
 - **Camera**: the front camera appears at the top of the page a second or
