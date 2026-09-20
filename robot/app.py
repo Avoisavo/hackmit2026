@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import html
 import io
 import json
 import math
@@ -8,12 +9,14 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from itertools import count
+from ipaddress import IPv4Address
 from pathlib import Path
 
 import requests
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel
 from unitree_webrtc_connect import unitree_auth
 from unitree_webrtc_connect.webrtc_driver import (
     UnitreeWebRTCConnection,
@@ -63,7 +66,7 @@ class Go2Connection(UnitreeWebRTCConnection):
         )
 
 
-ROBOT_IP = os.getenv("ROBOT_IP", "172.20.10.4")
+ROBOT_IP = os.getenv("ROBOT_IP", "10.254.159.2")
 TOKEN = secrets.token_urlsafe(32)
 CAMERA_WIDTH = 960
 CAMERA_FPS = 15
@@ -132,7 +135,8 @@ RECOVERY = {
     "hind_stand": ("hind_stand", False),
     "handstand": ("handstand", False),
 }
-# Commands that are themselves a recovery and must never be preceded by one.
+# Commands that skip the usual pose-exit sequence (RiseSit / StandUp / end
+# a held pose). run_command still requires RecoveryStand before the action.
 DIRECT = {"rise_sit", "recovery", "damp"}
 
 # Every trick ends with an automatic RecoveryStand once it has had this many
@@ -176,7 +180,7 @@ STATUS_TEXT = {
 robot = None
 armed = False
 stance = "unknown"  # see STANCE_AFTER / RECOVERY
-recovery_needed = False  # an unconfirmed command must not skip RecoveryStand
+recovery_needed = True  # recover once before driving; posture/actions invalidate it
 last_input = 0.0
 desired = (0.0, 0.0, 0.0)
 controller = None
@@ -189,6 +193,10 @@ action_lock = asyncio.Lock()
 recovery_task = None  # scheduled automatic recovery after a trick
 command_seq = 0       # bumps on every accepted sport reply
 stop_epoch = 0        # prevents an interrupted operation from enabling movement
+
+
+class ConnectOptions(BaseModel):
+    ip: IPv4Address
 
 
 def same_origin(ws: WebSocket) -> bool:
@@ -263,13 +271,14 @@ async def watchdog():
 
 
 async def disconnect():
-    global robot, motion_mode, latest_jpeg, stance
+    global robot, motion_mode, latest_jpeg, stance, recovery_needed
     cancel_scheduled_recovery()
     stop()
     old, robot = robot, None
     motion_mode = ""
     latest_jpeg = b""
     stance = "unknown"
+    recovery_needed = True
     if old:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(old.disconnect(), timeout=5)
@@ -358,6 +367,10 @@ def note_stance(key, parameter, code):
         stance = STANCE_AFTER.get(key, "after_trick")
     if key == "RecoveryStand":
         recovery_needed = False
+    elif key != "BalanceStand":
+        # A posture or trick changes the recovered stance. Plain joystick
+        # input and STOP do not: repeated drive keys can reuse the recovery.
+        recovery_needed = True
 
 
 def cancel_scheduled_recovery():
@@ -487,7 +500,7 @@ async def recover_to_standing(for_label, epoch):
 
 
 async def run_command(name, on=True):
-    """Posture or trick, with automatic recovery to standing first."""
+    """Recover before each posture/trick, then execute only after success."""
     global busy, last_error
     api_id, key, parameter = resolve(name, on)
     label = key if parameter is None else f"{key} {'on' if on else 'off'}"
@@ -505,6 +518,13 @@ async def run_command(name, on=True):
             steps = []
             if name not in DIRECT and on:
                 steps = await recover_to_standing(label, epoch)
+            # Leaving a held pose / after-trick stance may already have sent
+            # RecoveryStand. Do not send it twice for the same action, or
+            # prepend RecoveryStand to an explicit RecoveryStand request.
+            if name != "recovery" and not any(
+                step["api_id"] == resolve("recovery")[0] for step in steps
+            ):
+                steps.append(await recovery_stand(label, epoch))
             check_not_stopped(epoch)
             duration = AUTO_RECOVER_AFTER.get(name, 0) if on else SETTLE
             timeout = max(SPORT_REPLY_TIMEOUT, duration + TRICK_REPLY_GRACE)
@@ -534,17 +554,14 @@ async def run_command(name, on=True):
 
 
 async def prepare_stance(epoch):
-    # Same sequence dimOS runs before it drives over WebRTC: StandUp,
-    # settle, BalanceStand. Joystick input only moves the robot in balance
-    # stand. From Sit / a held pose the matching recovery runs instead of
-    # StandUp. Caller holds action_lock.
+    # Recover once, then balance. Joystick input and ordinary disarming do
+    # not invalidate recovery, so subsequent drive keys need no sport RPCs.
+    # From Sit / a held pose, leave that pose first. Caller holds action_lock.
     global last_error
     disarm()
     steps = await recover_to_standing("driving", epoch)
     if recovery_needed:
-        # A timed-out trick could still have run. StandUp alone does not clear
-        # its locked stance; require a confirmed RecoveryStand before driving.
-        steps.append(await recovery_stand("resuming after an unconfirmed command", epoch))
+        steps.append(await recovery_stand("driving", epoch))
     if stance != "balanced":
         step = await send_sport(
             "BalanceStand", SPORT_CMD["BalanceStand"], None, "BalanceStand"
@@ -622,8 +639,9 @@ async def protect_api(request: Request, call_next):
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    html = Path(__file__).with_name("index.html").read_text()
-    return html.replace("__TOKEN__", TOKEN)
+    page = Path(__file__).with_name("index.html").read_text()
+    page = page.replace("__TOKEN__", TOKEN).replace("__ROBOT_IP__", html.escape(ROBOT_IP))
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/status")
@@ -670,11 +688,13 @@ async def camera(token: str = ""):
 
 
 @app.post("/api/connect")
-async def connect():
-    global robot, busy, last_error
+async def connect(options: ConnectOptions | None = None):
+    global robot, busy, last_error, ROBOT_IP
     if action_lock.locked():
         raise HTTPException(409, "Another operation is running")
     async with action_lock:
+        if options is not None:
+            ROBOT_IP = str(options.ip)
         busy = True
         last_error = ""
         conn = None
@@ -692,9 +712,14 @@ async def connect():
                 raise RuntimeError("WebRTC data channel did not open")
             stop()
             await after_connect()
-            return {"connected": True, "mode": motion_mode}
+            return {"connected": True, "ip": ROBOT_IP, "mode": motion_mode}
         except Exception as exc:
-            last_error = str(exc)
+            reason = str(exc) or type(exc).__name__
+            last_error = (
+                f"Could not connect to {ROBOT_IP}: {reason}. "
+                "Check the latest LAN discovery IP and that the Mac and robot "
+                "are on the same Wi-Fi. Close other robot clients before retrying."
+            )
             robot = conn
             await disconnect()
             raise HTTPException(502, last_error or "Connection failed")
@@ -751,7 +776,7 @@ async def arm():
                     busy = True
                     try:
                         steps = []
-                        if stance != "balanced":
+                        if stance != "balanced" or recovery_needed:
                             steps = await prepare_stance(epoch)
                         check_not_stopped(epoch)
                         if controller is not owner:
@@ -782,7 +807,7 @@ async def action(name: str, on: bool = True):
 async def set_mode(name: str):
     # Motion switcher api 1002 = SelectMode. The controller swap takes a few
     # seconds; dimOS waits 5 s after the same call.
-    global busy, last_error, stance
+    global busy, last_error, stance, recovery_needed
     if name not in MOTION_MODES:
         raise HTTPException(404, "Unknown motion mode")
     if not connected():
@@ -794,6 +819,7 @@ async def set_mode(name: str):
         busy = True
         cancel_scheduled_recovery()
         stance = "unknown"
+        recovery_needed = True
         stop()
         try:
             reply = await request(
@@ -844,7 +870,7 @@ async def control(ws: WebSocket):
             values = [float(data.get(k, 0)) for k in ("forward", "left", "turn")]
             if not all(math.isfinite(v) for v in values):
                 raise ValueError("Invalid movement")
-            desired = tuple(max(-0.3, min(0.3, v)) for v in values)
+            desired = tuple(max(-1.0, min(1.0, v)) for v in values)
             last_input = time.monotonic()
             if not armed or busy:
                 desired = (0, 0, 0)

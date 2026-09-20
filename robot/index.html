@@ -23,6 +23,12 @@
     touch-action: none;
   }
   button:active { background: #456ba4; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  input {
+    font: inherit; color: inherit; background: #10141c;
+    border: 1px solid #58677f; border-radius: 8px; padding: 12px;
+    width: 180px; max-width: 100%; margin: 4px;
+  }
   button.risky { background: #5a3a1e; }
   #stop { background: #b42335; width: 100%; font-size: 22px; }
   #arm.on { background: #1f7a3a; }
@@ -53,8 +59,22 @@
 
 <h1>Go2 Control</h1>
 <p id="status">Loading…</p>
-<p id="hint">Connect robot, then hold W/A/S/D/Q/E or a direction button. Movement enables itself (stand up, balance stand) the first time.</p>
+<p id="hint">Connect robot, then hold W/A/S/D/Q/E or a direction button. Movement runs Recovery stand once, then Balance stand, before driving.</p>
 <p id="error"></p>
+
+<div class="panel">
+  <h2>Robot connection</h2>
+  <form id="connectionForm">
+    <label for="robotIp">Robot IP</label>
+    <input id="robotIp" name="ip" value="__ROBOT_IP__" required
+      inputmode="decimal" autocomplete="off" spellcheck="false"
+      pattern="[0-9]{1,3}(\.[0-9]{1,3}){3}" aria-describedby="connectionHelp">
+    <button id="connectButton" type="submit">Connect robot</button>
+    <button id="disconnectButton" type="button" onclick="command('/disconnect')">Disconnect</button>
+  </form>
+  <p class="small" id="connectionHelp">Use the IP from your latest LAN discovery. If the network changes, enter the new IP and connect again.</p>
+  <p class="small" id="connectionStatus" role="status"></p>
+</div>
 
 <div class="panel">
   <h2>Camera</h2>
@@ -67,8 +87,6 @@
 </div>
 
 <div class="panel">
-  <button onclick="command('/connect')">Connect robot</button>
-  <button onclick="command('/disconnect')">Disconnect</button>
   <button onclick="posture('stand')">Stand up</button>
   <button onclick="posture('balance')">Balance stand</button>
   <button onclick="posture('lie')">Lie down</button>
@@ -84,7 +102,9 @@
   </div>
 
   <button id="stop" onclick="halt('STOP pressed')">STOP / DISARM · Space</button>
-  <p>Hold a button or key to move. Release to send zero input.
+  <p>Hold a button or key to move at full joystick input (1.0). Release to send zero input.
+     Driving recovers once; repeated drive keys reuse that recovery until a
+     posture, trick or reconnection requires it again.
      Tricks pause driving, then recover and enable movement automatically.
      STOP, posture buttons, tab switches and loss of window focus disarm;
      the next key press enables movement again.</p>
@@ -92,8 +112,9 @@
 
 <div class="panel">
   <h2>Tricks</h2>
-  <p class="small">Every trick pauses driving, then automatically runs Recovery
-    stand and Balance stand and enables WASD movement once it has finished.
+  <p class="small">Every action pauses driving and waits for Recovery stand
+    before executing. After a trick finishes, it automatically runs Recovery
+    stand and Balance stand and enables WASD movement again.
     STOP or leaving this window cancels the sequence. Orange ones need at
     least 2 m of clear, flat space. Hind-leg stand and handstand are held for 6 s
     then ended; the End buttons end them sooner. The yellow line shows the robot's
@@ -126,13 +147,19 @@
 
 <script>
 const token = "__TOKEN__";
-const speed = 0.30;
+const speed = 1.0;
 const result = document.querySelector("#result");
 const hint = document.querySelector("#hint");
 const errorBox = document.querySelector("#error");
 const armButton = document.querySelector("#arm");
 const cam = document.querySelector("#cam");
 const modeName = document.querySelector("#modeName");
+const robotIp = document.querySelector("#robotIp");
+const connectButton = document.querySelector("#connectButton");
+const disconnectButton = document.querySelector("#disconnectButton");
+const connectionStatus = document.querySelector("#connectionStatus");
+let ipEdited = false;
+let connecting = false;
 const held = new Set();
 // Physical key positions, so the printed W/A/S/D/Q/E labels hold on any layout.
 const keyMap = {
@@ -161,12 +188,13 @@ function setEnabled(value) {
   armButton.classList.toggle("on", value);
 }
 
-async function api(path) {
+async function api(path, payload) {
   result.textContent = `${path} … working`;
   try {
     const response = await fetch("/api" + path, {
       method: "POST",
-      headers: {"X-Control-Token": token}
+      headers: {"X-Control-Token": token, "Content-Type": "application/json"},
+      body: payload === undefined ? undefined : JSON.stringify(payload)
     });
     const body = await response.json();
     result.textContent = JSON.stringify(body, null, 2);
@@ -178,7 +206,8 @@ async function api(path) {
         ? `${body.command}: accepted by the robot${before}.${after}`
         : `${body.command}: robot answered ${body.status_code}, ${body.status_text}.`);
     } else if (!response.ok && body.detail) {
-      note(body.detail);
+      note(Array.isArray(body.detail)
+        ? body.detail.map(error => error.msg).join("; ") : body.detail);
     }
     return response.ok && (!("status_code" in body) || body.status_code === 0);
   } catch (error) {
@@ -209,7 +238,7 @@ function arm() {
   if (commandInFlight) return Promise.resolve(false);
   armEpoch++;
   const haltsBefore = haltCount;
-  note("Enabling movement… (waits for any running trick, recovers to a walkable stand if needed, then balance stand)");
+  note("Enabling movement… (waits for any running trick, runs Recovery stand once if needed, then Balance stand)");
   arming = (async () => {
     let ok = await api("/arm");
     arming = null;
@@ -235,7 +264,7 @@ function autoArm() {
   arm();
 }
 
-async function command(path) {
+async function command(path, payload) {
   const operation = ++haltCount;
   armEpoch++;
   commandInFlight = true;
@@ -244,7 +273,7 @@ async function command(path) {
   // The command endpoint disarms on the server. Send zero input immediately;
   // a separate asynchronous STOP could arrive after the trick and cancel it.
   transmit({type: "move", forward: 0, left: 0, turn: 0});
-  const ok = await api(path);
+  const ok = await api(path, payload);
   if (haltCount === operation) {
     armEpoch++;
     commandInFlight = false;
@@ -253,11 +282,41 @@ async function command(path) {
   return ok;
 }
 
+robotIp.oninput = () => { ipEdited = true; };
+robotIp.onfocus = () => halt("editing robot IP");
+document.querySelector("#connectionForm").onsubmit = async event => {
+  event.preventDefault();
+  if (connecting) return;
+  const ip = robotIp.value.trim();
+  if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip) ||
+      ip.split(".").some(part => Number(part) > 255)) {
+    connectionStatus.textContent = "Enter a valid robot IPv4 address.";
+    return;
+  }
+  connecting = true;
+  robotIp.disabled = connectButton.disabled = disconnectButton.disabled = true;
+  connectButton.textContent = "Connecting…";
+  connectionStatus.textContent = `Connecting to ${ip}… This can take up to 40 seconds.`;
+  try {
+    const ok = await command("/connect", {ip});
+    if (ok) ipEdited = false;
+    connectionStatus.textContent = ok
+      ? `Connected to ${ip}. Movement is disarmed.`
+      : `Connection to ${ip} failed. Check the error below and retry.`;
+  } finally {
+    connecting = false;
+    robotIp.disabled = connectButton.disabled = disconnectButton.disabled = false;
+    connectButton.textContent = "Connect robot";
+  }
+};
+
 function posture(name) {
+  note("Running Recovery stand before the posture…");
   return command("/posture/" + name);
 }
 
 function action(name, risky, on = true) {
+  note(name === "recovery" ? "Running Recovery stand…" : "Running Recovery stand before the action…");
   return command("/action/" + name + (on ? "" : "?on=false"));
 }
 
@@ -311,6 +370,7 @@ window.addEventListener("keydown", event => {
     return;
   }
   if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.target?.closest("input, textarea, select, [contenteditable]")) return;
   const direction = keyMap[event.code];
   if (!direction) return;
   event.preventDefault();
@@ -357,12 +417,15 @@ setInterval(async () => {
       return;
     }
     document.querySelector("#status").textContent =
-      `${state.ip} · ${state.connected ? "Connected" : "Disconnected"} · ` +
+      `${state.ip} · ${connecting ? "Connecting" : state.connected ? "Connected" : "Disconnected"} · ` +
       `${state.armed ? "Movement enabled" : "Disarmed"}` +
       `${state.connected ? " · " + (state.stance || "unknown").replace("_", " ") : ""}` +
       `${state.busy ? " · Busy" : ""}` +
       `${state.connected ? (state.camera ? " · Camera live" : " · Camera starting") : ""}`;
     modeName.textContent = state.mode || "unknown";
+    if (!ipEdited && !connecting && document.activeElement !== robotIp) {
+      robotIp.value = state.ip;
+    }
     if (state.connected !== camConnected) showCamera(state.connected);
     // Adopt automatic enabling only for this window's successful trick.
     // STOP/blur and newer commands invalidate both that permission and old polls.

@@ -14,12 +14,22 @@ Drive a Unitree Go2 from a browser over the same WebRTC link dimOS uses.
 
 ```sh
 source ~/dimensional-applications/.venv/bin/activate
-cd ~/Developer/mit
-export ROBOT_IP='172.20.10.4'
+cd ~/Developer/hackmit2026/robot
+export ROBOT_IP='10.254.159.2'
 python -m uvicorn app:app --host 127.0.0.1 --port 8010
 ```
 
 Then open http://127.0.0.1:8010 in a browser on this Mac.
+
+Enter the robot's latest discovered address in **Robot IP**, then click
+**Connect robot**. The address can change when the Wi-Fi network changes;
+you can update it in the dashboard without restarting the server. `ROBOT_IP`
+sets the initial address at startup. For robot serial `B42D1000PC48I1GW`,
+the latest reported address is `10.254.159.2` (previously `172.20.10.4`).
+
+Run from this project's `robot` directory: the separate `~/Developer/mit`
+copy does not pick up changes made here. If port 8010 already has that old
+server running, stop it with Ctrl+C before starting this one.
 
 The server does not reload `app.py` on its own: after any change to it,
 Ctrl+C and start it again. After **every** server restart, reload the
@@ -49,9 +59,13 @@ and restart the server.
 1. **Connect robot** and wait for the status line to say Connected.
 2. **Hold W/S** (forward/back), **Q/E** (strafe), **A/D** (turn) or the
    on-screen buttons. The first press after connecting or after any posture
-   change enables movement by itself: it sends Stand up, waits 3 s, sends
-   Balance stand (the sequence dimOS uses), then drives. Later presses are
-   instant. Releasing sends zero input.
+   change enables movement by itself: it leaves any sitting/held pose,
+   runs Recovery stand once, waits 3 s, then sends Balance stand and drives.
+   Later presses reuse that recovery, including after STOP or losing focus.
+   A trick, posture change, mode switch or reconnection requires recovery
+   again; automatic recovery after a trick also satisfies this requirement.
+   Releasing sends zero input.
+   Keyboard and direction buttons use full joystick input (±1.0 per axis).
 3. **Space** or the red STOP button disarms. Posture buttons also disarm;
    the next key press re-enables. Tricks pause driving and automatically
    recover, enter Balance stand, and re-enable movement when finished.
@@ -72,10 +86,15 @@ stop is not a guarantee.
   (`normal` or `ai`/`mcf`). dimOS switches the robot to `ai` when it
   connects. The tricks below use the ID table for whichever mode is active.
   Switch modes while the robot is lying down; the swap takes a few seconds.
+- **Before every action/posture**: the app runs Recovery stand and waits
+  for a successful reply plus a 3 s settling pause before sending the
+  requested command. A refused or timed-out recovery prevents the action.
+  STOP cancels the pending action. Recovery needed to leave a previous pose
+  counts toward this step, and requesting Recovery stand itself sends it once.
 - **Tricks**: Hello, Stretch, Heart, Content, Scrape, Wiggle hips, Sit,
   Rise from sit, Dance 1/2, and the orange ones: Stand on hind legs,
   Handstand, Jump forward, Pounce, Front/Back/Left/Right flip, Damp (go
-  limp). Tricks run as soon as you click and every one ends with an
+  limp). Tricks run after Recovery stand and every one ends with an
   automatic Recovery stand, Balance stand, and movement enabled again.
   Give the robot at least 2 m of clear, flat
   space before the orange ones. A trick that does not exist in the current
