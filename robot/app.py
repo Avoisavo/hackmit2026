@@ -26,6 +26,7 @@ from unitree_webrtc_connect.webrtc_driver import (
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
 
 if __package__:
+    from .local_settings import ENV_FILE, read_settings
     from .control_plane import ROLES
     from .hare_plane import HareControlPlane as ControlPlane
     from .go2_speaker import Go2Speaker
@@ -34,6 +35,7 @@ if __package__:
     from .connection_health import ConnectionSupervisor, guard_heartbeat
     from .vision_service import VisionService
 else:
+    from local_settings import ENV_FILE, read_settings
     from control_plane import ROLES
     from hare_plane import HareControlPlane as ControlPlane
     from go2_speaker import Go2Speaker
@@ -89,7 +91,8 @@ class Go2Connection(UnitreeWebRTCConnection):
         )
 
 
-ROBOT_IP = os.getenv("ROBOT_IP", "10.254.159.2")
+LOCAL_SETTINGS = read_settings()
+ROBOT_IP = LOCAL_SETTINGS.get("ROBOT_IP", "10.254.159.2")
 TOKEN = secrets.token_urlsafe(32)
 CAMERA_WIDTH = 960
 CAMERA_FPS = 15
@@ -721,6 +724,8 @@ connection_watch = ConnectionSupervisor(
 boxes = BoxService(lambda: (latest_jpeg, frame_at, camera_session), connected)
 vision = VisionService(lambda: (latest_jpeg, frame_at, camera_session), connected,
                        box_status=boxes.status)
+vision._api_key = LOCAL_SETTINGS.get("OPENAI_API_KEY", "")
+vision.model = LOCAL_SETTINGS.get("OPENAI_VISION_MODEL", vision.model)
 
 
 def acquire_ai(control_id, epoch):
@@ -814,6 +819,7 @@ ai = CameraAgent(
                          "mode": motion_mode, "armed": armed},
     execute=execute_ai, finish=finish_ai,
 )
+ai.model = LOCAL_SETTINGS.get("OPENAI_CONTROL_MODEL", ai.model)
 app.include_router(ai.router)
 
 
@@ -855,12 +861,12 @@ async def demo_jump(check):
 speaker = Go2Speaker(lambda: robot, connected)
 plane = ControlPlane(vision=vision, acquire=acquire_ai, check_context=check_ai_context,
                      stop_robot=stop, gesture=lesson_gesture, finish=finish_ai,
-                     audio_acquire=acquire_audio_test, audio_check=check_audio_test, demo_motion=demo_jump)
+                     audio_acquire=acquire_audio_test, audio_check=check_audio_test, demo_motion=demo_jump, settings=LOCAL_SETTINGS)
 app.include_router(plane.router)
 app.include_router(vision.router)
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["127.0.0.1", "localhost", *filter(None, os.getenv("CONTROL_HOSTS", "").split(","))],
+    allowed_hosts=["127.0.0.1", "localhost", *filter(None, LOCAL_SETTINGS.get("CONTROL_HOSTS", "").split(","))],
 )
 
 
@@ -898,7 +904,7 @@ async def device_page(role: str):
 
 @app.get("/plane-assets/{name}")
 async def plane_asset(name: str):
-    if name not in ("operator.js", "device.js", "deepgram.js", "hare.js", "plane.css", "twinkle.js"):
+    if name not in ("operator.js", "device.js", "deepgram.js", "hare.js", "audio_setup.js", "plane.css", "twinkle.js"):
         raise HTTPException(404, "Asset not found")
     return FileResponse(Path(__file__).with_name("plane_web") / name,
                         headers={"Cache-Control": "no-store"})
@@ -973,6 +979,7 @@ async def tool_catalog():
 async def status():
     return {
         "ip": ROBOT_IP,
+        "configuration": {"file": ".env.local", "loaded": ENV_FILE.is_file()},
         "connected": connected(),
         "armed": armed,
         "busy": busy,
@@ -1059,7 +1066,7 @@ async def open_robot_connection(options: ConnectOptions | None = None):
             conn = Go2Connection(
                 WebRTCConnectionMethod.LocalSTA,
                 ip=ROBOT_IP,
-                aes_128_key=os.getenv("UNITREE_AES_128_KEY"),
+                aes_128_key=LOCAL_SETTINGS.get("UNITREE_AES_128_KEY"),
             )
             await asyncio.wait_for(conn.connect(), timeout=40)
             robot = conn

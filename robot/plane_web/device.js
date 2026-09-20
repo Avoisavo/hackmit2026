@@ -7,7 +7,7 @@ export class DeviceClient {
   constructor(role, key, report = () => {}) {
     this.role = role; this.key = key; this.report = report;
     this.clientId = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
-    this.active = false; this.state = null; this.listener = null;
+    this.active = false; this.ready = false; this.state = null; this.listener = null;
     this.source = null; this.playing = ''; this.handled = new Set();
     this.audioContext = null; this.timer = null; this.epoch = 0;
   }
@@ -25,7 +25,7 @@ export class DeviceClient {
     }
     return path === 'audio' ? response.arrayBuffer() : response.json();
   }
-  async start(audioContext = null) {
+  async start(audioContext = null, mediaStream = null) {
     if (this.active) return;
     if (!this.key) throw new Error('Open a pairing link from the control plane.');
     this.active = true; this.epoch++;
@@ -53,10 +53,12 @@ export class DeviceClient {
           onError: message => this.fail(new Error(message)),
           onClose: () => { if (this.active) this.fail(new Error('Microphone connection closed')); },
         }, {key: this.key, clientId: this.clientId});
-        await this.listener.start();
+        await this.listener.start(mediaStream, audioContext);
         if (!this.active || this.epoch !== epoch) { this.listener?.stop(); return; }
         if (!this.state?.listen) this.listener.pause();
+        this.listener.stream?.getAudioTracks().forEach(track => track.addEventListener?.("ended", () => { if (this.active) this.fail(new Error("Microphone disconnected")); }, {once:true}));
       }
+      this.ready = this.active;
     } catch (error) { this.fail(error); throw error; }
   }
   async poll() {
@@ -119,7 +121,7 @@ export class DeviceClient {
   fail(error) { this.stop(); this.report(error.message); }
   stop() {
     if (!this.active) return;
-    this.active = false; this.epoch++;
+    this.active = false; this.ready = false; this.epoch++;
     clearTimeout(this.timer); this.timer = null;
     this.cancelAudio();
     this.listener?.stop(); this.listener = null;

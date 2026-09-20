@@ -24,11 +24,13 @@ Open **http://127.0.0.1:8020/plane** on this Mac. The original robot controls ar
 still at `/controls`; `/` redirects to `/plane`. The independent scene-counting page remains at `/vision`.
 Only one operator page can own the robot control WebSocket.
 
-The launcher loads `/Users/derek/Developer/hackmit2026/.env.local`.
+The server automatically loads `/Users/derek/Developer/hackmit2026/.env.local`,
+even with plain Uvicorn and a different working directory. Explicit environment
+variables take precedence.
 This file is ignored by Git and readable only by your macOS account. The active
 Python server reads `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, and
 `ELEVENLABS_VOICE_ID`. It also reads `OPENAI_API_KEY` when provided; that key is
-needed for camera analysis, not audio tests. UI-saved keys last until restart.
+needed for camera analysis, not audio tests. Restart after changing the file. The dashboard has no credential entry form.
 
 `ELEVENLABS_AGENT_ID`, `NEXT_PUBLIC_ELEVENLABS_CONNECTION`, and
 `NEXT_PUBLIC_ROBOT_FACE_URL` are retained for the Next.js demo. The Python blocks
@@ -46,31 +48,25 @@ local YOLO weights are only needed for the advanced controls' optional boxes.
 
 ## Connect the demo
 
-1. Enter provider credentials under **Provider connections**: OpenAI key,
-   Deepgram key, ElevenLabs key, and an ElevenLabs voice ID accessible to your
-   account. Inputs are cleared on submit. Keys stay in server memory and are
-   never included in device pairing links or status responses. Environment
-   variables `OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, and
-   `ELEVENLABS_VOICE_ID` also work.
-2. Pair **Whammo 2.0 Speaker** over Bluetooth. In **System Settings → Sound**,
-   select it under **Output**. Test output before enabling the microphone. Click **Use this
-   computer’s speaker**, then **Play speaker test tone** under **Quick tests**.
-   The 0.8-second tone needs no API key or Go2 connection. Click **Test ElevenLabs
-   voice** after saving the voice key and ID. Go2 Air uses this external audio
-   path; this installation does not send speech to the robot's audio transceiver.
-3. With the Deepgram key loaded, click **Use this microphone**; choose
-   **Whammo 2.0 Speaker (Bluetooth)** in the browser's microphone prompt and allow
-   access. If you change inputs, click the button again to reopen capture. You can optionally pair a phone using the HTTPS setup below.
-   The microphone client sends final Deepgram transcripts;
-   partial transcripts never grade answers. **Listen for 20 seconds** shows test
-   transcripts and the local microphone level without starting an activity. The microphone waits while the robot
-   speaks. **Operator answer fallback** can exercise answers before the mic joins.
+1. Provider settings come from `.env.local`. The monitor shows configured/missing
+   states without exposing keys. OpenAI is needed for camera analysis, Deepgram
+   for transcription, ElevenLabs and its voice ID for speech.
+2. Choose **Whammo 2.0 Speaker** as the Mac output and your connected microphone
+   (such as DJI Wireless Microphone RX) as the default input.
+   Click one of the three demo buttons. It prepares the speaker and microphone
+   together, requests browser permission once, and waits for the transcription
+   connection before starting. The Go2 Air uses this external audio path.
+   Optional tests prepare their own audio; no Enable button is required first.
+3. The monitor shows the connected microphone, input level and playback state.
+   The mic waits while HARE speaks. Only final Deepgram transcripts grade answers.
+   Use **Manual override** for typed answers and presenter cues. Advanced controls
+   include **Reconnect speaker** and **Reconnect microphone** after changing devices.
 4. **Pair Arduino / face display**. Open the pairing URL in the Arduino's
    Chromium kiosk, with the ASUS display connected to the board. The device page
    uses the same Twinkle renderer as `hb` and receives the coordinator's expression.
    The board's old Python `server.py` is not needed for this page. The operator
    always has a local expression preview as well.
-5. Enter the Go2 IP and connect. Wait for **camera live** and click **Analyze blocks now** to check vision. Keep a clear view of
+5. Demos 1 and 2 connect the Go2 automatically. You can also enter its IP and connect under advanced controls. Wait for **camera live** and click **Analyze blocks now** to check vision. Keep a clear view of
    the toy blocks; the count is specifically for toy blocks, not total detections.
 6. Choose the target (default three). Optionally enable **one Hello gesture**;
    it is off by default and needs room for the robot's existing stand/recovery

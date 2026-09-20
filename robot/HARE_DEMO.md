@@ -6,23 +6,31 @@ Run the `dog` branch from `~/Developer/hackmit2026`:
 ~/Developer/hackmit2026/robot/start-control-plane.sh
 ```
 
-Open <http://127.0.0.1:8020/plane>. The header includes **DEMOS · V4**.
-The launcher reads the repository's ignored `.env.local`; credentials are not in
-Git. Only one server can use port 8020. If it is already running, use that page
+Open <http://127.0.0.1:8020/plane>. The dashboard includes **Demo 1**, **Demo 2**, **Demo 3**, a live system monitor,
+and manual overrides.
+The server reads the repository's ignored `.env.local`, including when started
+with a plain Uvicorn command from another directory. Explicit environment variables
+override the file. Credentials are not in Git. Only one server can use port 8020. If it is already running, use that page
 or stop that server before starting another. `/controls` retains the working
 manual controls and `/vision` retains the independent counting page.
 
 ## Before presenting
 
-1. Choose **Whammo 2.0 Speaker** as the Mac's sound output. Click **Use this
-   computer's speaker**, then **Play speaker test tone** and **Test ElevenLabs
-   voice**. A completed playback event does not prove the speaker was audible.
-2. Click **Use this microphone**, select the speaker's microphone in the browser
-   prompt, and test with **Listen for 20 seconds**. The mic pauses during HARE's
-   speech. Typed answers remain available under **Operator answer fallback**.
-3. Connect Go2 for the camera. Add `OPENAI_API_KEY` to `.env.local` and restart
-   if it is not already configured. Deepgram and ElevenLabs alone do not provide
-   camera analysis. Counted targets include the specified color **and the mat**.
+1. Choose **Whammo 2.0 Speaker** as the Mac's sound output; the connected DJI USB
+   microphone or your chosen default input supplies speech.
+   Click **Demo 1**, **Demo 2**, or **Demo 3**. That click enables browser audio,
+   pairs this computer's speaker and microphone, and waits for Deepgram to connect
+   before starting the lesson. Allow microphone access if the browser asks. Devices
+   are reused across demos. No separate Enable or Save connections click is needed.
+2. Watch **System monitor** for the speaker, selected microphone, input level,
+   provider configuration, robot, camera, movement and face display. The mic waits
+   while HARE speaks. Ready confirms the browser connection, not physical audibility.
+   Optional sound/mic tests and reconnect buttons are under **Setup & advanced controls**.
+   **Manual override** exposes count and touch cues, plus typed answers.
+3. Demos 1 and 2 connect the Go2 camera automatically. `OPENAI_API_KEY` in
+   `.env.local` is required for camera analysis; restart after adding it. Without
+   that key or camera, use the clearly labelled count override. Deepgram and
+   ElevenLabs alone do not analyze camera frames. Counts include color and the mat.
 4. Use **Pair Arduino / face display** for the display page. It shows the face,
    equation/count, ear wobble, and hop animation. LAN setup is described in
    [CONTROL_PLANE.md](CONTROL_PLANE.md).
@@ -42,7 +50,7 @@ rehearse the 45/60/25-second targets with the actual hardware.
 
 Say: **“HARE checks a real answer, not a tap on a screen.”**
 
-Select **1 · Count and Check**. HARE asks for three blue blocks on the mat.
+Select **Demo 1**. HARE asks for three blue blocks on the mat.
 Place two. Two fresh, agreeing camera views produce the count **2** and HARE
 asks, **“You have two. How many more do we need?”** Add one block. Only a fresh
 count of three completes the physical check, displays **2 + 1 = 3**, and cues
@@ -57,7 +65,7 @@ they are not represented as camera verification.
 
 Say: **“Watch what happens when the learner stalls.”**
 
-Select **2 · Run, Play, Teach Again**. HARE asks for five red blocks. Ten seconds
+Select **Demo 2**. HARE asks for five red blocks. Ten seconds
 without count progress, backed by a recent block observation, changes the lesson.
 For reliable stage timing, press **L** when your teammate walks away. The log
 identifies this as a presenter cue; no emotion or diagnosis is inferred.
@@ -76,7 +84,7 @@ Say: **“The learner never escaped the maths. The maths changed shape. Blocks b
 
 Say: **“HARE is a creature. The learner practises care on HARE.”**
 
-Select **3 · Soft Hands**. Use your own teammate, never a judge. **B** cues the
+Select **Demo 3**. Use your own teammate, never a judge. **B** cues the
 hard bump and makes the on-screen ears wobble. HARE says, in order:
 
 - “Ouch, that was too hard. Softer, please.”

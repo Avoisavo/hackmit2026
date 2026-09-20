@@ -98,13 +98,13 @@ export class ChildListener {
     return "";
   }
 
-  async start()                {
+  async start(mediaStream = null, audioContext = null) {
     this.stopped = false;
     this.paused = false;
 
     // Echo cancellation is the real defence against the robot hearing itself.
     // Pausing the track is belt-and-braces on top.
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    this.stream = mediaStream || await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
@@ -119,7 +119,9 @@ export class ChildListener {
     }
 
     // A separate analyser purely for the on-screen level meter.
-    this.ctx = new AudioContext();
+    this.ctx = audioContext || new AudioContext();
+    await this.ctx.resume();
+    if (this.stopped) return;
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 256;
     this.ctx.createMediaStreamSource(this.stream).connect(this.analyser);
@@ -141,10 +143,17 @@ export class ChildListener {
     const ws = new WebSocket(`${DG_URL}?${qs.toString()}`, ["bearer", access_token]);
     this.ws = ws;
 
+    let readyResolve, readyReject;
+    const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+    const timer = setTimeout(() => readyReject(new Error('Deepgram connection timed out')), 12000);
+    this.rejectReady = readyReject;
     ws.onopen = () => {
-      console.log("[DG] socket open");
-      this.handlers.onOpen?.();
-      this.startRecorder();
+      if (this.stopped) { readyReject(new Error('Microphone setup stopped')); return; }
+      try {
+        this.startRecorder();
+        this.handlers.onOpen?.();
+        readyResolve();
+      } catch (error) { readyReject(error); }
     };
     ws.onmessage = (ev              ) => {
       if (typeof ev.data !== "string") return;
@@ -155,14 +164,17 @@ export class ChildListener {
       }
     };
     ws.onerror = () => {
+      readyReject(new Error("Deepgram microphone connection failed"));
       console.log("[DG] socket error");
       this.handlers.onError?.("Deepgram socket error");
     };
     ws.onclose = (ev) => {
+      readyReject(new Error("Deepgram microphone connection closed"));
       console.log(`[DG] socket closed code=${ev.code} reason=${ev.reason || "(none)"}`);
       this.stopRecorder();
       this.handlers.onClose?.();
     };
+    try { await ready; } finally { clearTimeout(timer); this.rejectReady = null; }
   }
 
           startRecorder() {
@@ -284,6 +296,7 @@ export class ChildListener {
 
   stop() {
     this.stopped = true;
+    this.rejectReady?.(new Error("Microphone setup stopped"));
     this.stopRecorder();
     this.send({ type: "CloseStream" });
     this.ws?.close();

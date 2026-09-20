@@ -1,5 +1,5 @@
-import {DeviceClient} from './device.js';
 import {renderHare} from './hare.js';
+import {AudioSetup} from './audio_setup.js';
 
 const $ = selector => document.querySelector(selector);
 const token = document.body.dataset.token;
@@ -8,6 +8,13 @@ face.start();
 let socket, controlId = '', controlReady = false, leaving = false, retry;
 let activity = {}, robot = {}, generation = 0, starting = false, pending = false, cameraSource = '', testing = false, catalog = null;
 const localDevices = {};
+let preparing = false, preparationMessage = '';
+const audioMessages = {};
+const audioSetup = new AudioSetup({pair, devices: localDevices, report(role, text) {
+  audioMessages[role] = text;
+  $('#' + role + 'Message').textContent = text;
+  if (preparing) { preparationMessage = text; $('#preparationStatus').textContent = text; }
+}});
 $('#deviceOrigin').value = location.origin;
 
 async function request(path, payload) {
@@ -27,6 +34,7 @@ async function request(path, payload) {
 function report(error) { $('#error').textContent = error.message || String(error); }
 function halt(explicit = false) {
   generation++;
+  audioSetup.cancel();
   localDevices.speaker?.cancelAudio();
   localDevices.mic?.listener?.pause();
   if (controlReady) socket.send(JSON.stringify({type: 'stop'}));
@@ -45,6 +53,7 @@ function openControl() {
   candidate.onclose = event => {
     if (socket !== candidate) return;
     generation++; controlReady = false; controlId = '';
+    audioSetup.cancel();
     localDevices.speaker?.cancelAudio();
     if (!leaving && event.code !== 1008) retry = setTimeout(openControl, 1500);
     else if (event.code === 1008) report(new Error('Another dashboard owns controls. Close it, then reload this page.'));
@@ -58,12 +67,15 @@ setInterval(() => {
 
 function render(state) {
   activity = state;
+  $('#stopAll').hidden = false;
+  $('#liveActivity').hidden = false;
+  renderMonitor(state);
   renderHare($('#hareDisplay'), state.demo);
-  if (state.demo) $('#presenterCue').textContent = state.demo.presenter_cue;
+  $('#presenterCue').textContent = state.demo?.presenter_cue || '';
   $('#demoNote').textContent = state.demo?.note || '';
   const io = state.audio_tool;
   $('#audioToolResult').textContent = io ? `${io.status}: ${io.result ? JSON.stringify(io.result) : 'Ready for a speech or listening tool call.'}` : '';
-  document.querySelectorAll('[data-demo], #toolSpeak, #toolListen').forEach(button => { button.disabled = state.running || state.busy || robot.ai?.busy || !controlReady; });
+  document.querySelectorAll('[data-demo], #toolSpeak, #toolListen').forEach(button => { button.disabled = testing || preparing || state.running || state.busy || robot.ai?.busy || !controlReady; });
   document.querySelectorAll('[data-demo-event], #fallbackApply').forEach(button => { button.disabled = !state.running || !state.demo; });
   if (face.name !== state.face) face.setEmote(state.face || 'Ready');
   $('#activityPhase').textContent = state.phase.replaceAll('_', ' ');
@@ -75,13 +87,13 @@ function render(state) {
   $('#expression').disabled = state.running;
   $('#expression').value = state.face;
   $('#voiceHealth').textContent = `Speaker ${state.speaker.ready ? 'ready' : 'offline'} · ${state.devices.mic.online ? 'Mic online' : 'Mic offline'}`;
-  $('#speakerStatus').textContent = state.speaker.message || 'Enable a speaker first.';
+  $('#speakerStatus').textContent = state.speaker.message || 'Starts automatically with a demo or sound test.';
   $('#testResult').textContent = `${state.test.status}: ${state.test.message}`;
   $('#movementResult').textContent = robot.ai?.message || 'Movement is disarmed.';
   const locked = testing || state.running || state.busy || robot.ai?.busy || !controlReady;
   document.querySelectorAll('[data-test], [data-move], [data-posture], [data-trick], #testCamera').forEach(button => { button.disabled = locked; });
   document.querySelectorAll('[data-face]').forEach(button => { button.disabled = state.running; });
-  $('#faceHealth').textContent = state.devices.face.online ? 'Display online · ' + state.face : 'Local preview · pair external display';
+  health('#faceHealth', state.devices.face.online ? 'Display online · ' + state.face : 'Local preview · ' + state.face, 'ready');
   $('#keyStatus').textContent = Object.entries(state.configured).map(([name, ready]) => `${name}: ${ready ? 'configured' : 'missing'}`).join(' · ') + '. Keys stay in server memory.';
   $('#outcome').textContent = state.task_complete ? 'Camera confirms the target number of blocks.' : state.answer_correct ? 'Correct spoken answer. The additional block has not been confirmed by the camera.' : 'A correct answer and physically placing the blocks are tracked separately.';
   const list = $('#events'); list.replaceChildren();
@@ -90,13 +102,34 @@ function render(state) {
     type.textContent = event.kind; item.append(type, document.createTextNode(event.text)); list.append(item);
   }
 }
+function health(selector, text, state = 'idle') {
+  const node = $(selector); node.textContent = text; node.dataset.health = state;
+}
+function renderMonitor(state) {
+  const speaker = localDevices.speaker, mic = localDevices.mic;
+  const speakerReady = speaker ? speaker.active && speaker.ready && speaker.audioContext?.state === 'running' : state.speaker.ready;
+  const micReady = mic ? mic.active && mic.ready : state.devices.mic.online;
+  health('#speakerHealth', speakerReady ? `${speaker?.playing ? 'Playing' : 'Ready'} · ${speaker ? audioSetup.outputLabel : 'Paired speaker'}` : audioMessages.speaker || 'Starts with your demo', speakerReady ? 'ready' : speaker ? 'error' : 'idle');
+  health('#micHealth', micReady ? `${mic?.listener?.paused ? 'Ready · waiting' : 'Listening'} · ${audioSetup.microphoneLabel()}` : preparing ? (audioMessages.mic || 'Preparing…') : audioMessages.mic || 'Starts with your demo', micReady ? 'ready' : 'idle');
+  health('#cameraHealth', robot.camera ? 'Live Go2 camera' : robot.connected ? 'Waiting for camera' : 'Connects with Demo 1 or 2', robot.camera ? 'ready' : 'idle');
+  health('#elevenHealth', state.configured.elevenlabs ? 'Settings loaded' : 'Missing in .env.local', state.configured.elevenlabs ? 'ready' : 'error');
+  health('#deepgramHealth', micReady ? 'Connected' : state.configured.deepgram ? 'Settings loaded' : 'Missing in .env.local', micReady || state.configured.deepgram ? 'ready' : 'error');
+  health('#visionHealth', state.configured.openai ? 'Camera AI configured' : 'No OpenAI key · manual count available', state.configured.openai ? 'ready' : 'idle');
+  const moving = state.running && state.phase === 'hopping' && state.demo?.motion === 'forward_jumps';
+  const motion = moving ? `Forward jump · ${state.demo.hops} completed` : robot.ai?.busy ? robot.ai.message : robot.recovering ? 'Recovering stance' : robot.busy ? 'Robot action in progress' : robot.armed ? 'Movement enabled' : 'Disarmed';
+  health('#motionHealth', `${motion} · ${robot.stance || 'posture unknown'}`, moving || robot.armed || robot.busy ? 'active' : 'idle');
+  health('#modeHealth', `${state.demo?.motion === 'forward_jumps' ? 'Go2 forward jumps' : $('#demoMotion').value === 'forward_jumps' ? 'Go2 forward jumps selected' : 'Screen hops'} · ${robot.mode || 'motion mode unknown'}`);
+  $('#preparationStatus').textContent = preparationMessage;
+}
+
 async function poll() {
   if (pending || leaving) return;
   pending = true;
   try {
     const [state, status] = await Promise.all([request('/plane/status'), request('/status')]);
     robot = status; render(state);
-    $('#robotHealth').textContent = !controlReady ? 'Dashboard controls unavailable' : status.connected ? `Connected · ${status.camera ? 'camera live' : 'camera starting'}` : status.reconnecting ? 'Reconnecting; activity stopped' : 'Disconnected';
+    health('#robotHealth', !controlReady ? 'Dashboard controls unavailable' : status.connected ? `Connected · ${status.ip}` : status.reconnecting ? 'Reconnecting; activity stopped' : 'Disconnected', controlReady && status.connected ? 'ready' : 'idle');
+    $('#camera').hidden = !status.connected;
     const source = status.connected ? `/camera.mjpeg?token=${encodeURIComponent(token)}` : '';
     if (source !== cameraSource) { cameraSource = source; $('#camera').src = source; }
   } catch (error) {
@@ -142,14 +175,6 @@ $('#answerForm').onsubmit = async event => {
   } catch (error) { report(error); }
 };
 $('#expression').onchange = () => request('/plane/face', {name: $('#expression').value}).then(render).catch(report);
-$('#keysForm').onsubmit = async event => {
-  event.preventDefault(); const values = {};
-  for (const input of event.target.querySelectorAll('input')) {
-    if (input.value.trim()) values[input.name] = input.value.trim();
-    input.value = '';
-  }
-  request('/plane/keys', values).then(render).catch(report);
-};
 async function pair(role) {
   const result = await request('/plane/pair', {role});
   const base = new URL($('#deviceOrigin').value || location.origin);
@@ -161,18 +186,10 @@ document.querySelectorAll('[data-pair]').forEach(button => {
   button.onclick = () => pair(button.dataset.pair).catch(report);
 });
 for (const role of ['mic', 'speaker']) {
-  $('#' + (role === 'mic' ? 'localMic' : 'localSpeaker')).onclick = async () => {
-    if (activity.running) { report(new Error('Stop the activity before replacing audio devices.')); return; }
-    let audioContext;
-    if (role === 'speaker') { audioContext = new AudioContext(); await audioContext.resume(); }
+  $('#' + (role === 'mic' ? 'localMic' : 'localSpeaker')).onclick = () => runTest(() => {
     localDevices[role]?.stop();
-    try {
-      const data = await pair(role);
-      const client = new DeviceClient(role, data.key, text => { $('#' + role + 'Message').textContent = text; });
-      localDevices[role] = client;
-      await client.start(audioContext);
-    } catch (error) { audioContext?.close().catch(() => {}); report(error); }
-  };
+    return audioSetup.prepare({microphone: role === 'mic', check: preparationGuard(generation)});
+  });
 }
 
 $('#stopTest').onclick = () => halt(true);
@@ -190,7 +207,12 @@ async function runTest(work) {
   finally { testing = false; await poll(); }
 }
 document.querySelectorAll('[data-test]').forEach(button => {
-  button.onclick = () => runTest(async () => render(await withContext('/plane/test', {kind: button.dataset.test})));
+  button.onclick = () => runTest(async () => {
+    const check = preparationGuard(generation);
+    await audioSetup.prepare({microphone: button.dataset.test === 'microphone', check});
+    check();
+    render(await withContext('/plane/test', {kind: button.dataset.test}));
+  });
 });
 document.querySelectorAll('[data-face]').forEach(button => {
   button.onclick = () => request('/plane/face', {name: button.dataset.face}).then(render).catch(report);
@@ -248,9 +270,47 @@ async function demoEvent(event, extra = {}) {
   if (!activity.running || !activity.demo) return;
   render(await request('/plane/event', {event, ...extra, session_id: activity.session_id, event_id: crypto.randomUUID()}));
 }
+function preparationGuard(epoch) {
+  return () => {
+    if (epoch !== generation || leaving || document.hidden) throw new Error('Start cancelled. Select a demo when ready.');
+  };
+}
+async function prepareDemo(name, rehearsal) {
+  if (rehearsal || ['close', 'backup'].includes(name)) return;
+  const check = preparationGuard(generation);
+  if (!activity.configured?.elevenlabs) throw new Error('ElevenLabs settings are missing. The server loads ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID from .env.local on startup.');
+  if (!activity.configured?.deepgram) throw new Error('Deepgram settings are missing. The server loads DEEPGRAM_API_KEY from .env.local on startup.');
+  preparing = true;
+  if (activity.phase) render(activity);
+  try {
+    // No await before this call: the demo click authorizes Web Audio and mic access.
+    await audioSetup.prepare({microphone: true, check});
+    check();
+    if (['count_check', 'run_play'].includes(name) && !robot.connected) {
+      preparationMessage = 'Connecting Go2 camera…';
+      $('#preparationStatus').textContent = preparationMessage;
+      try { await request('/connect', {ip: $('#robotIp').value.trim()}); }
+      catch (error) {
+        check();
+        if ($('#demoMotion').value === 'forward_jumps') throw error;
+        $('#error').textContent = 'Go2 camera unavailable. Presenter count override is available. ' + error.message;
+      }
+      check();
+      robot = await request('/status');
+    }
+    check();
+  } finally {
+    preparing = false;
+    preparationMessage = '';
+    $('#preparationStatus').textContent = '';
+  }
+}
 document.querySelectorAll('[data-demo]').forEach(button => {
   button.onclick = () => runTest(async () => {
+    const check = preparationGuard(generation);
     const rehearsal = $('#rehearsal').checked;
+    await prepareDemo(button.dataset.demo, rehearsal);
+    check();
     render(await withContext('/plane/start', {demo: button.dataset.demo, rehearsal,
       motion: rehearsal ? 'screen' : $('#demoMotion').value, clear_space: $('#clearSpace').checked}));
   });
@@ -268,6 +328,9 @@ window.addEventListener('keydown', event => {
 });
 for (const [selector, name] of [['#toolSpeak','speak'], ['#toolListen','listen']]) {
   $(selector).onclick = () => runTest(async () => {
+    const check = preparationGuard(generation);
+    await audioSetup.prepare({microphone: name === 'listen', check});
+    check();
     const args = name === 'speak' ? {text: $('#toolSpeech').value} : {seconds: 10};
     render(await withContext('/plane/call', {name, arguments: {...args, reason: 'Presenter selected the audio tool'}, run_id: crypto.randomUUID()}));
   });

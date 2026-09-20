@@ -57,10 +57,11 @@ async def body(request):
 
 
 class AudioProviders:
-    def __init__(self):
-        self.deepgram = os.getenv("DEEPGRAM_API_KEY", "")
-        self.elevenlabs = os.getenv("ELEVENLABS_API_KEY", "")
-        self.voice_id = os.getenv("ELEVENLABS_VOICE_ID", "")
+    def __init__(self, settings=None):
+        settings = os.environ if settings is None else settings
+        self.deepgram = settings.get("DEEPGRAM_API_KEY", "")
+        self.elevenlabs = settings.get("ELEVENLABS_API_KEY", "")
+        self.voice_id = settings.get("ELEVENLABS_VOICE_ID", "")
 
     @staticmethod
     def post(url, **kwargs):
@@ -117,12 +118,12 @@ class ControlPlane:
     SPEECH_TIMEOUT = 60
     SESSION_SECONDS = 600
 
-    def __init__(self, *, vision, acquire, check_context, stop_robot, gesture, finish, speaker=None, audio_acquire=None, audio_check=None, clock=time.monotonic):
+    def __init__(self, *, vision, acquire, check_context, stop_robot, gesture, finish, speaker=None, audio_acquire=None, audio_check=None, settings=None, clock=time.monotonic):
         self.vision = vision
         self.acquire, self.check_context = acquire, check_context
         self.stop_robot, self.gesture, self.finish = stop_robot, gesture, finish
         self.clock = clock
-        self.audio = AudioProviders()
+        self.audio = AudioProviders(settings)
         self.speaker = speaker
         self.audio_acquire = audio_acquire
         self.audio_check = audio_check
