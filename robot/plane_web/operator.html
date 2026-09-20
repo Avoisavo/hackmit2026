@@ -19,7 +19,7 @@
 <div class="service"><b>ROBOT</b><span id="robotHealth">Connecting dashboard…</span></div>
 <div class="service"><b>CAMERA</b><span id="cameraHealth">Connects with your demo</span></div>
 <div class="service"><b>MOVEMENT</b><span id="motionHealth">Disarmed</span></div>
-<div class="service"><b>ACTION OUTPUT / ROBOT MODE</b><span id="modeHealth">Go2 turn + Hello gestures</span></div>
+<div class="service"><b>ACTION OUTPUT / ROBOT MODE</b><span id="modeHealth">Go2 Heart, Content + Hello gestures</span></div>
 <div class="service"><b>ELEVENLABS · SPEECH</b><span id="elevenHealth">Checking settings…</span></div>
 <div class="service"><b>DEEPGRAM · LISTENING</b><span id="deepgramHealth">Checking settings…</span></div>
 <div class="service"><b>OPENAI · CAMERA ANALYSIS</b><span id="visionHealth">Checking settings…</span></div>
@@ -45,7 +45,7 @@
 <details><summary>Operator answer fallback</summary><p class="muted">For checking the flow before a microphone joins. This sends a typed answer to the current question. In Demo 3, type “sorry” when HARE asks for an apology.</p>
 <form id="answerForm" class="row"><input id="answer" maxlength="300" placeholder="Child's answer" aria-label="Typed answer"><button id="sendAnswer">Submit answer</button></form></details>
 <details><summary>Manual robot movement</summary><p class="muted">These buttons move the real robot. Keep space clear. Each step lasts 0.3 seconds at 0.15 joystick input and stops automatically. A fresh camera and this focused tab are required.</p>
-<div class="row"><button data-posture="stand">Stand up</button><button data-posture="balance">Balance stand</button><button data-posture="lie">Lie down</button><button data-trick="hello">Hello / wave</button></div>
+<div class="row"><button data-posture="stand">Stand up</button><button data-posture="balance">Balance stand</button><button data-posture="lie">Lie down</button><button data-trick="hello">Hello / wave</button><button data-trick="heart">Heart</button><button data-trick="content">Content</button><button data-trick="scrape">Scrape</button><button data-trick="sit">Sit</button><button data-trick="rise_sit">Rise from sit</button></div>
 <div class="row"><button data-move="forward">Step forward · 0.3 s</button><button data-move="turn_left">Turn left · 0.3 s</button><button data-move="turn_right">Turn right · 0.3 s</button></div>
 <p id="movementResult" class="muted">Movement is disarmed.</p></details>
 <p><a href="/controls">Open full robot controls →</a></p></section>
@@ -53,8 +53,9 @@
 <p class="muted">Demo buttons prepare audio for you. Use these optional settings for Go2 actions, caption rehearsal, component tests, and extra displays.</p>
 <section class="card"><h2>Robot connection</h2><form id="connectForm" class="row"><input id="robotIp" aria-label="Robot IP" value="__ROBOT_IP__" required><button>Connect robot</button><button id="disconnect" type="button">Disconnect</button></form><p><a href="/controls">Advanced robot controls</a></p></section>
 <section class="card"><h2>Demo options</h2>
-<div class="row"><label>Demo 2 actions <select id="demoMotion"><option value="robot_gestures">Go2 half-turn + Hello gestures</option><option value="screen">Screen Hello gestures · no robot motion</option></select></label><label>Inactivity timeout (seconds) <input id="stallSeconds" type="number" min="5" max="120" value="12"></label><label><input id="rehearsal" type="checkbox"> Caption rehearsal · no audio or robot required</label></div>
-<p class="muted">Demo 2 turns the real robot and waves when Go2 actions are selected. Keep standing and turning space clear. It never chases the learner. STOP / Space or leaving this window cancels the sequence.</p>
+<div class="row"><label>All demo actions <select id="demoMotion"><option value="robot_gestures">Go2 Heart, Content + Hello gestures</option><option value="screen">Screen rehearsal · no robot motion</option></select></label><label>Inactivity timeout (seconds) <input id="stallSeconds" type="number" min="5" max="120" value="12"></label><label><input id="rehearsal" type="checkbox"> Caption rehearsal · no audio or robot required</label></div>
+<label><input id="jumpClearance" type="checkbox"> Demo 2: add one forward celebration jump. I have at least 2 m of clear, flat space ahead, with people and objects outside the landing area.</label>
+<p class="muted">All three demos now gesture. Demo 1 uses Heart and Content; Demo 2 also turns and waves; Demo 3 stays still during touch, then asks the learner to step back before Heart. Keep room for standing and gestures. The optional jump moves forward; it is not an in-place hop. STOP / Space or leaving this window cancels the sequence.</p>
 
 
 <div class="row"><button data-demo="close">Closing slide</button><button data-demo="backup">Hardware backup</button></div>
@@ -98,6 +99,6 @@
 <section class="card"><details open><summary>Provider connections</summary><p id="keyStatus" class="muted">Keys stay in this server's memory. Camera frames go to OpenAI; microphone audio goes to Deepgram; robot speech goes to ElevenLabs.</p>
 <p class="muted">Settings load automatically from the repository’s private <code>.env.local</code>. Restart the server after changing that file. Keys are never sent to this page.</p></details></section>
 
-<p class="muted build-label">HARE · DEMO DASHBOARD · AI STAGES + HB FACES V6 · PLAYFUL VOICE + SAY SORRY</p>
+<p class="muted build-label">HARE · DEMO DASHBOARD · AI STAGES + HB FACES V6 · PLAYFUL VOICE + SAY SORRY · LIVE GESTURES</p>
 </details>
 </main><script src="/plane-assets/twinkle.js"></script><script type="module" src="/plane-assets/operator.js"></script></body></html>

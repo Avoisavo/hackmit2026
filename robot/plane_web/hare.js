@@ -4,7 +4,7 @@ export function renderHare(root, demo) {
   root.hidden = !demo;
   if (!demo) return;
   root.querySelector('[data-hare-equation]').textContent = demo.equation || demo.title;
-  root.querySelector('[data-hare-source]').textContent = demo.evidence === 'presenter' ? 'Presenter fallback' : demo.evidence === 'camera' ? 'Camera count' : demo.motion === 'robot_gestures' ? 'Go2 Hello gestures' : 'Screen Hello gestures';
+  root.querySelector('[data-hare-source]').textContent = demo.evidence === 'presenter' ? 'Presenter fallback' : demo.evidence === 'camera' ? 'Camera count' : demo.motion === 'robot_gestures' ? 'Go2 gestures' : 'Screen rehearsal';
   const effect = demo.effect;
   if (effect && root.dataset.effect !== effect.id) {
     root.dataset.effect = effect.id;

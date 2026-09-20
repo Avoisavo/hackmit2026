@@ -78,6 +78,22 @@ test('Demo 1 prepares audio then connects camera and starts the chosen demo',asy
   assert.ok(paths.indexOf('/plane/start')>paths.indexOf('/connect'));
   assert.equal(f.calls.find(c=>c.path==='/plane/start').payload.motion,'screen');
 });
+for(const demo of ['count_check','soft_hands'])test(demo+' preserves real-gesture mode and does not require turn telemetry',async()=>{
+  const f=await fixture({connected:true});f.nodes['#demoMotion'].value='robot_gestures';
+  await f.demo(demo);
+  assert.equal(f.calls.find(c=>c.path==='/plane/start').payload.motion,'robot_gestures');
+  assert.equal(f.calls.find(c=>c.path==='/plane/start').payload.jump_clearance,false);
+});
+test('Demo 2 sends explicit jump clearance and the monitor names the forward jump',async()=>{
+  const f=await fixture({connected:true});f.nodes['#demoMotion'].value='robot_gestures';
+  f.status.heading={ready:true};f.nodes['#jumpClearance'].checked=true;await f.demo('run_play');
+  assert.equal(f.calls.find(c=>c.path==='/plane/start').payload.jump_clearance,true);
+  f.state.running=true;f.state.phase='demo_action';
+  f.state.demo={name:'run_play',motion:'robot_gestures',action:'front_jump',actions_completed:['heart'],jump_enabled:true};
+  f.render(f.state);
+  assert.match(f.nodes['#motionHealth'].textContent,/Forward jump/);
+  assert.equal(f.nodes['#jumpClearance'].disabled,true);
+});
 for(const reason of ['STOP','blur'])test(reason+' while microphone setup is pending prevents late demo startup',async()=>{
   const gate=deferred();const f=await fixture({micGate:gate});const pending=f.demo('soft_hands');await tick();
   if(reason==='STOP')f.nodes['#stopAll'].onclick();else f.listeners.blur();

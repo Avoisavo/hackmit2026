@@ -1,7 +1,7 @@
 # HARE presenter runbook
 
 Start the `dog` checkout with `robot/start-control-plane.sh`, then open
-<http://127.0.0.1:8020/plane>. The page shows **AI STAGES + HB FACES V6 · PLAYFUL VOICE + SAY SORRY**.
+<http://127.0.0.1:8020/plane>. The build label includes **PLAYFUL VOICE + SAY SORRY · LIVE GESTURES**.
 The server reads the repository's private `.env.local`, even with plain Uvicorn.
 Explicit environment settings override that file. No credentials belong in Git.
 
@@ -9,6 +9,9 @@ The three demo buttons prepare the Mac speaker, connected/default microphone and
 Go2 camera automatically. Allow microphone access once. The current Mac defaults
 are Whammo speaker output and DJI USB microphone input. No separate Enable or
 Save connections clicks are needed. The microphone waits while HARE speaks.
+**Go2 gestures** is the default for all three demos. **Setup & advanced controls
+→ Demo options** offers screen rehearsal and the optional forward jump. The
+movement monitor names each action; the event log records completed commands.
 
 ## Demo 1 — Count and Check
 
@@ -20,7 +23,9 @@ Place four. OpenAI checks two fresh camera frames; when both counts agree with
 high confidence, HARE asks **“I spy four! We're aiming for five. How many more do we need?”** Saying
 “one” encourages adding it. Place the fifth object: a new camera observation
 completes the check and shows **4 + 1 = 5**. A spoken answer alone cannot complete
-the physical task. This demo does not command robot movement.
+the physical task. HARE performs **Heart** at the opening, **Content** after the
+correct spoken answer (once per object count), and **Heart** when the five-object
+mission finishes. Each action waits until its preceding speech has finished.
 
 If needed, use **Fallback object count** and **F**. Presenter counts are labelled
 as overrides and never claim camera verification.
@@ -34,16 +39,26 @@ unavailable. The monitor distinguishes a timeout assumption from a timeout with
 recent camera evidence that no person is visible; neither measures attention or
 emotion. **L** is the presenter override for this transition.
 
-The default action output for Demo 2 is **Go2 half-turn + Hello gestures**:
+Demo 2 opens with **Heart**, then uses **Go2 half-turn + Hello gestures**:
 
 1. HARE makes one half-turn in place, using live IMU heading feedback, then stops.
 2. It says **“Game switch! Come back! Let's count my silly hellos together!”**
 3. It performs Hello twice, saying **“Hello!”** after each completed gesture.
 4. It asks **“Your turn, counting buddy! How many hellos did you count?”** Answer **“two.”**
 5. It says **“Two! You got it! Two hellos means two. Ready for three more?”**
+   and performs **Content**. This is not counted as a Hello.
 6. It performs three more Hello gestures and asks for the total. Answer **“five.”**
 7. It explains **“Five! Woohoo! Two plus three is five. Let's try our five-object
-   mission again!”** The camera checks the final group of five.
+   mission again!”** It performs **Heart**, then the camera checks the final group
+   of five. Completing that mission adds a final **Heart**.
+
+For a jump, select **Demo 2: add one forward celebration jump** before starting.
+This confirms at least 2 m of clear, flat space ahead with people and objects
+outside the landing area. After the answer **five**, HARE asks for room and
+performs one tested **FrontJump** instead of that Heart, then returns to objects.
+The jump moves forward; it is not an in-place hop. The checkbox is off by default,
+applies only to Demo 2, and never enables jumps in screen/caption rehearsal or
+the camera AI's unrestricted tool loop. A refusal stops the demo without retry.
 
 Keep space clear for standing, turning and waving. The robot never chases anyone
 or translates during the turn. The turn stops after approximately 180 degrees
@@ -53,12 +68,13 @@ existing recovery/Hello command path is reused; a refused action stops the demo.
 These protections are tested in simulation; physical heading direction and the
 actual gesture must still be checked on this Go2.
 
-Choose **Screen Hello gestures** for voice with visual gestures and no movement.
+Choose **Screen rehearsal** for voice with visual gestures and no movement.
 **Caption rehearsal** also skips microphones, providers and robot connection.
 
 ## Demo 3 — Soft Hands
 
-Show a clear Go2 view first. Cover the Go2 camera until its image is black for
+HARE greets the learner with **Content**, then waits for the bump cue. Wait for
+that gesture to finish and show a clear Go2 view. Cover the Go2 camera until its image is black for
 about one second. The detector requires three or more advancing frames spanning
 at least half a second after a clear baseline. This is the staged rough-touch
 cue; do not actually hit the robot. A disconnected/stale camera, a brief flicker,
@@ -83,6 +99,9 @@ After the gentle touch, press **G**. HARE says **“Lovely soft hands! Thank you
 touch remains a presenter event; there is no touch or force sensor. **B** remains
 the bump fallback. The black-camera cue is deliberately labelled as a demo cue,
 not proof of an impact or pain. Uncover the camera after the cue.
+In Go2 mode, it adds **“Step back and I'll send you a heart!”**, then performs
+**Heart** after the line finishes. There is no motor action during the rough-touch,
+apology or gentle-touch waiting phases. Demo 3 never jumps.
 
 ## OpenAI stages and HB expressions
 

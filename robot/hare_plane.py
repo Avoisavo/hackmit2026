@@ -19,12 +19,13 @@ AUDIO_TOOLS = ('speak', 'listen')
 
 
 class HareControlPlane(ControlPlane):
-    def __init__(self, *, demo_turn=None, observer=None, face_bridge=None, **kwargs):
+    def __init__(self, *, demo_turn=None, demo_gesture=None, observer=None, face_bridge=None, **kwargs):
         self.face_bridge = face_bridge
         self.face_mode, self.face_source = 'auto', 'lesson'
         super().__init__(**kwargs)
         self.demo = None
         self.demo_turn, self.observer = demo_turn, observer
+        self.demo_gesture = demo_gesture
         self.black_cue = BlackCameraCue()
         self.observer_status = {'status':'idle', 'stage':'waiting', 'reason':'Start a demo to observe the camera'}
         self._demo_scan_signature = None
@@ -145,10 +146,13 @@ class HareControlPlane(ControlPlane):
             raise HTTPException(400, 'Choose a HARE demo and valid rehearsal/motion settings')
         if rehearsal and motion != 'screen':
             raise HTTPException(400, 'Caption rehearsal cannot command robot motion')
-        if name != 'run_play':
+        if name in ('close', 'backup'):
             motion = 'screen'
-        if motion == 'robot_gestures' and (not self.demo_turn or not self.vision.camera_fresh()):
-            raise HTTPException(409, 'Connect Go2 and wait for a fresh camera before turning and Hello gestures')
+        if motion == 'robot_gestures' and (not self.demo_gesture or not self.vision.camera_fresh() or (name == 'run_play' and not self.demo_turn)):
+            raise HTTPException(409, 'Connect Go2 and wait for a fresh camera before demo gestures')
+        jump_clearance = data.get('jump_clearance', False)
+        if type(jump_clearance) is not bool:
+            raise HTTPException(400, 'Forward jump clearance must be true or false')
         if not rehearsal and name not in ('close', 'backup') and (not self.speaker_ready() or not self.audio.elevenlabs or not self.audio.voice_id):
             raise HTTPException(409, 'Enable the speaker and configure ElevenLabs, or select caption rehearsal')
         stall_seconds = data.get('stall_seconds', 12)
@@ -180,7 +184,7 @@ class HareControlPlane(ControlPlane):
         self.face_mode = 'auto'
         self.black_cue = BlackCameraCue()
         self.observer_status = {'status':'waiting', 'stage':'waiting', 'reason':'Waiting for fresh Go2 camera frames'}
-        self.demo = HareDemo(self, name, rehearsal, motion, stall_seconds=stall_seconds)
+        self.demo = HareDemo(self, name, rehearsal, motion, stall_seconds=stall_seconds, jump_clearance=jump_clearance)
         self.demo.begin()
         self._task = asyncio.create_task(self.run(self.session_id))
         return self.status()
@@ -245,7 +249,7 @@ class HareControlPlane(ControlPlane):
                         self._demo_scan_task = None
                         self._next_scan = self.clock() + 2
                 await self.demo.tick()
-                if self.running and self.phase not in ('turning', 'gesturing') and not self._demo_scan_task and self.clock() >= self._next_scan:
+                if self.running and self.phase not in ('turning', 'gesturing', 'demo_action') and not self._demo_scan_task and self.clock() >= self._next_scan:
                     if not self.demo.rehearsal and self.vision._api_key and self.vision.camera_fresh():
                         self._demo_scan_signature = self.scan_signature()
                         if self.observer:

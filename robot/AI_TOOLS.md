@@ -142,8 +142,12 @@ queued audio and listening windows; a spoken stop also cancels the owning AI run
 
 `POST /api/plane/start` additionally accepts `demo`: `count_check`, `run_play`,
 `soft_hands`, `close`, or `backup`; `rehearsal`: boolean; and `motion`: `screen`
-or `forward_jumps`, plus the existing control context. Forward jumps also require
-`clear_space:true`. Caption rehearsal only permits screen motion.
+or `robot_gestures`, plus the existing control context. All three demos support
+real Heart/Content/Hello choreography; Demo 2 also turns with heading feedback.
+Demo 2 can replace its five-Hello celebration with one forward jump when
+`jump_clearance:true` explicitly confirms a clear landing area. It defaults to
+false and is ignored outside physical Demo 2. Caption rehearsal only permits
+screen motion. Poll `demo.action` and `demo.actions_completed` for gesture status.
 
 `POST /api/plane/event` accepts `session_id`, unique `event_id`, and `event`:
 `count` (with integer `count`), `learner_left`, `bump`, or `gentle`.

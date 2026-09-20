@@ -865,12 +865,14 @@ def check_audio_test(context):
         raise HTTPException(409, "Audio test stopped because dashboard controls changed")
 
 
-async def demo_jump(check):
+async def demo_gesture(action, check):
+    if action not in ('hello', 'heart', 'content', 'front_jump'):
+        raise HTTPException(400, 'Unsupported demo gesture')
     check()
-    reply = await run_command("front_jump", automatic_recovery=False, interrupt_ai=False, guard=check)
+    reply = await run_command(action, automatic_recovery=False, interrupt_ai=False, guard=check)
     check()
     if reply["status_code"] != 0:
-        raise HTTPException(409, "Go2 refused the forward jump")
+        raise HTTPException(409, f'Go2 refused {action}')
     await ai_wait(reply["remaining_seconds"], check)
 
 
@@ -905,7 +907,7 @@ face_bridge = FaceBridge(LOCAL_SETTINGS)
 plane = ControlPlane(vision=vision, acquire=acquire_ai, check_context=check_ai_context,
                      stop_robot=stop, gesture=lesson_gesture, finish=finish_ai,
                      audio_acquire=acquire_audio_test, audio_check=check_audio_test,
-                     demo_turn=demo_turn, observer=DemoObserver(vision), face_bridge=face_bridge,
+                     demo_turn=demo_turn, demo_gesture=demo_gesture, observer=DemoObserver(vision), face_bridge=face_bridge,
                      settings=LOCAL_SETTINGS)
 app.include_router(plane.router)
 app.include_router(vision.router)
@@ -980,7 +982,10 @@ async def tool_catalog():
     return {
         "version": 2, "tools": TOOLS,
         "audio_dispatch": {"method": "POST", "path": "/api/plane/call", "tools": ["speak", "listen"], "result": "Poll /api/plane/status audio_tool; no robot or camera required, current focused control context required."},
-        "demos": {"start": "/api/plane/start", "events": "/api/plane/event", "names": ["count_check", "run_play", "soft_hands", "close", "backup"]},
+        "demos": {"start": "/api/plane/start", "events": "/api/plane/event", "names": ["count_check", "run_play", "soft_hands", "close", "backup"],
+            "motion": ["screen", "robot_gestures"], "gestures": ["heart", "content", "hello"],
+            "jump_clearance": "Boolean, false by default. Only physical Demo 2 may perform one forward jump after five hellos; requires 2 m of clear landing space.",
+            "action_status": "/api/plane/status: demo.action, demo.actions_completed"},
         "dispatch": {"method": "POST", "path": "/api/ai/call",
             "authentication": "X-Control-Token (server/operator only)",
             "body": {"name": "move_robot", "arguments": {"direction": "forward", "seconds": 0.3, "speed": 0.15, "reason": "Visible clear space ahead"},

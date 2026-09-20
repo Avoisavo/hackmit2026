@@ -22,10 +22,11 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.audio_acquire = Mock(return_value='audio-context')
         self.check = Mock()
         self.motion = AsyncMock(return_value={'turned':True,'degrees':180,'note':'Turn completed'})
+        self.demo_gesture = AsyncMock()
         self.plane = HareControlPlane(vision=self.vision, acquire=self.acquire, check_context=self.check,
             audio_acquire=self.audio_acquire, audio_check=self.check,
             stop_robot=lambda reason: self.plane.cancel(reason), gesture=AsyncMock(), finish=Mock(),
-            demo_turn=self.motion, clock=lambda: self.now)
+            demo_turn=self.motion, demo_gesture=self.demo_gesture, clock=lambda: self.now)
         self.plane.DEVICE_TIMEOUT = 1000
         self.plane.audio.elevenlabs = 'test'; self.plane.audio.voice_id = 'voice'
         self.plane.audio.deepgram = 'test'; self.plane.audio.speak = Mock(return_value=b'fake-mp3')
@@ -78,6 +79,10 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         await self.plane.demo.tick()
         await self.speech()
 
+    async def actions(self):
+        while self.plane.phase == 'demo_action':
+            await self.plane.demo.tick()
+
     def camera(self,count):
         self.plane.demo.observe({'observation_fresh':True,'observation':{'stable':True,'observed_count':count}})
 
@@ -108,7 +113,7 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.plane.demo.equation,'4 + 1 = 5')
 
     async def test_run_play_turns_then_counts_two_and_three_hellos_and_returns_to_objects(self):
-        await self.start('run_play', motion='robot_gestures'); await self.speech()
+        await self.start('run_play', motion='robot_gestures'); await self.speech(); await self.actions()
         self.assertEqual(self.vision.target_object, 'small movable objects grouped in the foreground')
         await self.event('learner_left')
         self.assertEqual(self.plane.phase, 'turning')
@@ -121,18 +126,19 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.plane.answer_correct)
         await self.speech()
         self.assertEqual((await self.answer('two')).status_code, 200)
-        await self.speech(); await self.hellos(3)
+        await self.speech(); await self.actions(); await self.hellos(3)
         self.assertEqual(self.plane.phase, 'answer_five')
         self.assertEqual(self.plane.demo.hellos, 5)
         self.assertEqual(self.plane.gesture.await_count, 5)
         self.assertEqual((await self.answer('five')).status_code, 200)
         self.assertIn('Two plus three is five', self.plane.speech['text'])
         self.assertFalse(self.plane.task_complete)
-        await self.speech(); self.camera(5)
+        await self.speech(); await self.actions(); self.camera(5)
         self.assertTrue(self.plane.task_complete)
-        await self.speech()
+        await self.speech(); await self.actions()
         self.assertEqual(self.plane.phase, 'complete')
         self.assertIn('Hello gestures', self.plane.demo.cue)
+        self.assertEqual([call.args[0] for call in self.demo_gesture.await_args_list], ['heart','content','heart','heart'])
 
     async def test_stall_timer_adapts_once_without_inferring_emotions(self):
         await self.start('run_play'); await self.speech(); self.camera(0)
@@ -140,6 +146,93 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.plane.demo.adapted)
         self.assertIn('No object or answer progress',self.plane.events[-1]['text'])
         self.assertEqual((await self.event('learner_left')).status_code,409)
+
+    async def test_count_demo_gestures_after_speech_and_encourages_each_count_only_once(self):
+        await self.start(motion='robot_gestures',jump_clearance=True)
+        self.assertTrue(self.plane.requires_robot)
+        self.assertFalse(self.plane.demo.jump_clearance)
+        self.demo_gesture.assert_not_awaited()
+        await self.speech(); await self.actions()
+        self.camera(4); await self.speech(); await self.answer('one')
+        await self.speech(); await self.actions()
+        self.assertEqual([call.args[0] for call in self.demo_gesture.await_args_list],['heart','content'])
+        await self.answer('one'); await self.speech(); await self.actions()
+        self.assertEqual(self.demo_gesture.await_count,2)
+        self.camera(5); await self.speech()
+        self.assertTrue(self.plane.running)
+        await self.actions()
+        self.assertFalse(self.plane.running)
+        self.assertEqual(self.plane.demo.action_history,['heart','content','heart'])
+
+    async def test_forward_jump_is_one_opted_in_demo_two_celebration(self):
+        await self.start('run_play',motion='robot_gestures',jump_clearance=True)
+        await self.speech(); await self.actions(); await self.event('learner_left')
+        await self.plane.demo.tick(); await self.speech(); await self.hellos(2)
+        await self.answer('two'); await self.speech(); await self.actions(); await self.hellos(3)
+        await self.answer('five')
+        self.assertIn('one forward celebration jump',self.plane.speech['text'])
+        self.assertNotIn('front_jump',self.plane.demo.action_history)
+        await self.speech(); await self.actions()
+        self.assertEqual(self.plane.phase,'return_objects')
+        self.assertEqual(self.plane.demo.action_history.count('front_jump'),1)
+        self.camera(5); await self.speech(); await self.actions()
+        self.assertEqual(self.plane.demo.action_history.count('front_jump'),1)
+
+    async def test_soft_hands_stays_still_during_touch_and_waits_for_step_back_line_before_heart(self):
+        await self.start('soft_hands',motion='robot_gestures',jump_clearance=True)
+        await self.speech(); await self.actions()
+        self.assertEqual(self.plane.demo.action_history,['content'])
+        await self.event('bump')
+        for _ in range(3): await self.speech()
+        await self.answer('sorry'); await self.speech(); await self.speech()
+        self.assertEqual(self.plane.phase,'await_gentle')
+        self.assertEqual(self.demo_gesture.await_count,1)
+        await self.event('gentle')
+        self.assertIn('Step back',self.plane.speech['text'])
+        self.assertEqual(self.demo_gesture.await_count,1)
+        await self.speech(); await self.actions()
+        self.assertEqual(self.plane.demo.action_history,['content','heart'])
+        self.assertFalse(self.plane.running)
+
+    async def test_new_gestures_reject_stale_or_black_camera_and_wrong_demo(self):
+        from robot.tests.test_demo_observer import jpeg
+        for invalid in ('stale','black','replaced'):
+            with self.subTest(invalid=invalid):
+                self.vision.camera_fresh.return_value=True
+                self.vision.get_frame=lambda:(jpeg('white'),self.now,1)
+                await self.start(motion='robot_gestures'); await self.speech()
+                old_demo=self.plane.demo
+                if invalid=='stale': self.vision.camera_fresh.return_value=False
+                elif invalid=='black': self.vision.get_frame=lambda:(jpeg('black'),self.now,1)
+                else: self.plane.demo=SimpleNamespace()
+                with self.assertRaises(HTTPException): await old_demo.tick()
+                self.demo_gesture.assert_not_awaited()
+                self.plane.demo=old_demo; self.plane.cancel('End test')
+
+    async def test_stop_during_gesture_cannot_advance_or_issue_another_action(self):
+        await self.start(motion='robot_gestures'); await self.speech()
+        entered,release=asyncio.Event(),asyncio.Event()
+        async def gesture(action,check):
+            entered.set(); await release.wait(); check()
+        self.demo_gesture.side_effect=gesture
+        pending=asyncio.create_task(self.plane.demo.tick())
+        await entered.wait()
+        self.assertEqual(self.plane.status()['demo']['action'],'heart')
+        self.plane.cancel('STOP'); release.set()
+        with self.assertRaises(HTTPException): await pending
+        self.assertEqual(self.plane.phase,'stopped')
+        self.assertEqual(self.plane.demo.action_history,[])
+        self.assertEqual(self.demo_gesture.await_count,1)
+
+    async def test_screen_rehearsal_never_enables_jump_or_physical_gestures(self):
+        await self.start('run_play',rehearsal=True,jump_clearance=True)
+        self.assertFalse(self.plane.demo.jump_clearance)
+        self.now+=6; await self.plane.demo.tick()
+        self.assertEqual(self.plane.phase,'observing')
+        self.demo_gesture.assert_not_awaited()
+        self.plane.cancel('End test')
+        response=await self.client.post('/api/plane/start',json={'demo':'run_play','jump_clearance':'true'})
+        self.assertEqual(response.status_code,400)
 
     async def test_soft_hands_presenter_cues_are_ordered_and_deduplicated(self):
         await self.start('soft_hands')
@@ -208,7 +301,7 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.vision.camera_fresh.return_value = True
         await self.start('run_play', motion='robot_gestures')
         self.assertTrue(self.plane.requires_robot)
-        await self.speech(); await self.event('learner_left')
+        await self.speech(); await self.actions(); await self.event('learner_left')
         entered,release = asyncio.Event(),asyncio.Event()
         async def turn(check):
             entered.set(); await release.wait(); check()
@@ -411,12 +504,18 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['transcript'],'three')
             call.assert_awaited_once()
 
-    async def test_jump_uses_existing_tested_action_without_automatic_rearm(self):
-        with patch.object(app,'run_command',new_callable=AsyncMock,return_value={'status_code':0,'remaining_seconds':4}) as command,patch.object(app,'ai_wait',new_callable=AsyncMock):
-            check=Mock();await app.demo_jump(check)
-            command.assert_awaited_once_with('front_jump',automatic_recovery=False,interrupt_ai=False,guard=check)
-        with patch.object(app,'run_command',new_callable=AsyncMock,return_value={'status_code':3202}),self.assertRaises(HTTPException):
-            await app.demo_jump(Mock())
+    async def test_demo_gestures_use_existing_tested_actions_without_automatic_rearm(self):
+        for action in ('hello','heart','content','front_jump'):
+            with self.subTest(action=action):
+                with patch.object(app,'run_command',new_callable=AsyncMock,return_value={'status_code':0,'remaining_seconds':4}) as command,patch.object(app,'ai_wait',new_callable=AsyncMock) as wait:
+                    check=Mock();await app.demo_gesture(action,check)
+                    command.assert_awaited_once_with(action,automatic_recovery=False,interrupt_ai=False,guard=check)
+                    wait.assert_awaited_once_with(4,check)
+                with patch.object(app,'run_command',new_callable=AsyncMock,return_value={'status_code':3202}),self.assertRaises(HTTPException):
+                    await app.demo_gesture(action,Mock())
+        with patch.object(app,'run_command',new_callable=AsyncMock) as command:
+            with self.assertRaises(HTTPException): await app.demo_gesture('back_flip',Mock())
+            command.assert_not_awaited()
 
     async def test_half_turn_uses_heading_controller_and_disarms_after_failure(self):
         async def fail(read, command, check):
