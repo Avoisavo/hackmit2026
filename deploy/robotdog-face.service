@@ -1,0 +1,14 @@
+[Unit]
+Description=Robot dog face server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/robotdog-face
+ExecStart=/usr/bin/python3 /opt/robotdog-face/server.py
+Environment=PORT=8080
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>robot dog control</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #07080C;
+    color: #FFC24B;
+    font: 15px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    padding: 28px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 13px; letter-spacing: .2em; text-transform: uppercase; opacity: .6; font-weight: normal; margin-bottom: 4px; }
+  .sub { opacity: .4; font-size: 12px; margin-bottom: 20px; }
+
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  input[type=text] {
+    background: #0A0B10; border: 1px solid rgba(255,194,75,.25); border-radius: 8px;
+    color: #FFC24B; padding: 8px 12px; font: inherit; flex: 1; min-width: 200px;
+  }
+  button {
+    background: #0A0B10; border: 1px solid rgba(255,194,75,.3); border-radius: 8px;
+    color: #FFC24B; padding: 8px 14px; font: inherit; cursor: pointer;
+  }
+  button:hover { background: rgba(255,194,75,.12); }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #FFC24B; color: #07080C; border-color: #FFC24B; font-weight: bold; }
+  button.primary:hover { background: #ffcf6b; }
+
+  #status { font-size: 13px; opacity: .7; margin-bottom: 20px; min-height: 1.4em; }
+  #status.ok { color: #7CD98A; opacity: 1; }
+  #status.err { color: #FF7A6B; opacity: 1; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 24px; }
+  .emote-btn { padding: 16px 10px; text-align: center; font-size: 14px; }
+  .emote-btn .key { display: block; opacity: .4; font-size: 11px; margin-top: 4px; }
+
+  .hold-row { display: flex; gap: 8px; align-items: center; margin-bottom: 24px; }
+  .hold-row label { opacity: .6; font-size: 13px; }
+  .hold-row input[type=number] {
+    background: #0A0B10; border: 1px solid rgba(255,194,75,.25); border-radius: 8px;
+    color: #FFC24B; padding: 6px 10px; font: inherit; width: 70px;
+  }
+
+  .log { border-top: 1px solid rgba(255,194,75,.15); padding-top: 14px; }
+  .log h2 { font-size: 11px; letter-spacing: .15em; text-transform: uppercase; opacity: .4; margin-bottom: 8px; }
+  #logList { font-size: 12px; opacity: .55; max-height: 180px; overflow-y: auto; }
+  #logList div { padding: 2px 0; }
+</style>
+</head>
+<body>
+<h1>robot dog control</h1>
+<div class="sub">POST /emote to the board over Wi-Fi</div>
+
+<div class="row">
+  <input type="text" id="host" value="http://10.254.159.201:8080">
+  <button id="checkBtn" class="primary">check connection</button>
+</div>
+<div id="status">not checked yet</div>
+
+<div class="hold-row">
+  <label for="hold">hold (seconds, 0 = until next change)</label>
+  <input type="number" id="hold" value="0" min="0" step="0.5">
+</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="log">
+  <h2>activity</h2>
+  <div id="logList"></div>
+</div>
+
+<script>
+(function () {
+  var EMOTES = [];   // fetched from the board's /emotes -- never hardcoded,
+                      // so this panel can't drift from whatever face pack is
+                      // actually deployed (legacy amber-eyes vs. Twinkle).
+  var hostInput = document.getElementById('host');
+  var statusEl = document.getElementById('status');
+  var logList = document.getElementById('logList');
+  var grid = document.getElementById('grid');
+
+  function log(msg, isErr) {
+    var d = document.createElement('div');
+    var t = new Date().toLocaleTimeString();
+    d.textContent = t + '  ' + msg;
+    if (isErr) d.style.color = '#FF7A6B';
+    logList.insertBefore(d, logList.firstChild);
+    while (logList.children.length > 40) logList.removeChild(logList.lastChild);
+  }
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls || '';
+  }
+
+  function host() {
+    var h = hostInput.value.trim().replace(/\/$/, '');
+    if (!/^https?:\/\//.test(h)) h = 'http://' + h;
+    return h;
+  }
+
+  function buildGrid(names) {
+    EMOTES = names;
+    grid.innerHTML = '';
+    names.forEach(function (name, i) {
+      var b = document.createElement('button');
+      b.className = 'emote-btn';
+      var key = i < 9 ? String(i + 1) : (i === 9 ? '0' : '');
+      b.innerHTML = name + (key ? '<span class="key">' + key + '</span>' : '');
+      b.addEventListener('click', function () { sendEmote(name); });
+      grid.appendChild(b);
+    });
+  }
+
+  function checkConnection() {
+    setStatus('checking...', '');
+    fetch(host() + '/health', { signal: AbortSignal.timeout(4000) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        setStatus('connected -- ' + d.faces + ' face(s) listening' + (d.version ? ' (' + d.version + ')' : ''), 'ok');
+        log('health check ok (' + d.faces + ' faces)');
+        return fetch(host() + '/emotes', { signal: AbortSignal.timeout(4000) });
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.emotes && d.emotes.length) {
+          buildGrid(d.emotes);
+          log('loaded ' + d.emotes.length + ' emotes: ' + d.emotes.join(', '));
+        }
+      })
+      .catch(function (e) {
+        setStatus('cannot reach board: ' + e.message, 'err');
+        log('health check failed: ' + e.message, true);
+      });
+  }
+
+  function sendEmote(name) {
+    var hold = parseFloat(document.getElementById('hold').value) || 0;
+    setStatus('sending "' + name + '"...', '');
+    fetch(host() + '/emote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, hold: hold }),
+      signal: AbortSignal.timeout(4000)
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.d.error || 'server rejected it');
+        setStatus('sent "' + name + '"' + (hold ? ' for ' + hold + 's' : ''), 'ok');
+        log('emote -> ' + name + (hold ? ' (hold ' + hold + 's)' : ''));
+      })
+      .catch(function (e) {
+        setStatus('failed: ' + e.message, 'err');
+        log('emote "' + name + '" failed: ' + e.message, true);
+      });
+  }
+
+  document.addEventListener('keydown', function (ev) {
+    if (document.activeElement === hostInput || document.activeElement.tagName === 'INPUT') return;
+    var k = ev.key;
+    if (k >= '0' && k <= '9') {
+      var idx = (k === '0') ? 9 : (parseInt(k, 10) - 1);
+      if (EMOTES[idx]) sendEmote(EMOTES[idx]);
+    }
+  });
+
+  document.getElementById('checkBtn').addEventListener('click', checkConnection);
+  checkConnection();
+})();
+</script>
+</body>
+</html>

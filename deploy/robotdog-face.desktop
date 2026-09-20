@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Robot Dog Face
+Exec=/opt/robotdog-face/deploy/kiosk.sh
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

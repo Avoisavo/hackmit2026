@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#efeee8">
+<meta name="description" content="An experimental expression studio for the robot dog. Explore ten emotions, attention, and a quieter kind of personality.">
+<title>Little signals — expression lab</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23141618'/%3E%3Cpath d='M18 24v16m28-16v16' stroke='%23FFC24B' stroke-width='11' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/lab.css">
+</head>
+<body>
+<header class="masthead"><a class="brand" href="/lab"><span class="brand-eyes" aria-hidden="true"><i></i><i></i></span> little signals<span class="brand-note"> / expression lab</span></a><span class="edition">ROBOT DOG · STUDY 02</span></header>
+<main>
+<section class="intro"><div><p class="eyebrow">A little less robot. A little more dog.</p><h1>Something behind<br>those eyes<span>.</span></h1></div><p class="intro-note">Ten feelings. A thousand little signals.<br>A study in making a companion feel present,<br>even when it has nothing to say.</p></section>
+<section class="workspace" aria-label="Expression studio">
+<div class="stage-column">
+<div class="stage" id="stage">
+<div class="stage-top"><span><i class="live-dot"></i> <span id="mode-label">EXPERIMENTAL CHARACTER</span></span><span id="stage-count">01 / 10</span></div>
+<canvas id="preview" role="img" aria-label="Robot dog showing neutral emotion"></canvas>
+<div class="stage-bottom"><span id="stage-hint">Move here. I’m paying attention.</span><button id="fullscreen" aria-label="View face fullscreen">Expand ↗</button></div>
+</div>
+<div class="performance"><button class="play-button" id="perform"><span aria-hidden="true">▶</span> Meet the dog <span class="duration">24 sec</span></button><p id="story" aria-live="polite">A small encounter, told entirely through expression.</p><div class="progress" aria-hidden="true"><div id="progress-fill"></div></div></div>
+<div class="design-note"><span class="note-index">THE IDEA / 02</span><p>Presence, without the performance.<br><span>A glance, a breath, a beat before the smile.</span></p><a id="panel-link" href="/?design=expressive&bare=1&link=0&emote=neutral" target="_blank" rel="noopener">Open panel view ↗</a></div>
+</div>
+<aside class="controls">
+<div class="control-head"><span class="eyebrow">Expression palette</span><span class="shortcut">KEYS 1–9, 0</span></div>
+<div class="emotes" id="emotes"></div>
+<div class="feeling"><div><span class="feeling-number" id="feeling-number">01</span><h2 id="feeling-title">Just here.</h2></div><p id="feeling-copy">An easy gaze. Small glances. Comfortable in the quiet.</p></div>
+<div class="energy-control"><div class="label-line"><label for="energy">Personality</label><output id="energy-value" for="energy">65%</output></div><input id="energy" type="range" min="0" max="100" value="65"><div class="range-labels"><span>Quiet company</span><span>Full of life</span></div></div>
+<div class="switch-row"><label for="attention">Notice my cursor</label><input id="attention" type="checkbox" role="switch" checked></div>
+<div class="switch-row"><label for="motion">Living motion</label><input id="motion" type="checkbox" role="switch" checked></div>
+<div class="compare"><span>Character direction</span><div class="segmented" role="group" aria-label="Character direction"><button id="classic" aria-pressed="false">Original</button><button id="expressive" class="selected" aria-pressed="true">Study 02</button></div></div>
+<p class="local-note">Local preview · no commands sent to the board.</p>
+</aside>
+</section>
+<footer><span>Built for a small screen. Made to feel a little closer.</span><a href="/gallery" target="_blank" rel="noopener">Original pose sheet ↗</a><span>HACKMIT / 2026</span></footer>
+</main>
+<script src="/face.js"></script>
+<script src="/expressive.js"></script>
+<script src="/lab.js"></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #07080C;
+  cursor: none;                     /* it is a face, not a computer */
+  font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: #FFC24B;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Pinned to the viewport rather than sized in vw/vh: viewport units disagree
+   with the actual drawable area under kiosk chrome and on some panels, which
+   pushes the eyes off-center and leaves a band at the bottom. */
+#face { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+
+#help {
+  position: fixed;
+  left: 24px;
+  top: 24px;
+  padding: 18px 22px;
+  border: 1px solid rgba(255, 194, 75, .25);
+  border-radius: 12px;
+  background: rgba(7, 8, 12, .88);
+  backdrop-filter: blur(8px);
+}
+
+#help h1 { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; opacity: .55; margin-bottom: 10px; }
+#help ul { list-style: none; columns: 2; column-gap: 28px; }
+#help li { white-space: nowrap; }
+#help li b { display: inline-block; width: 1.4em; opacity: .55; font-weight: normal; }
+#help p { margin-top: 12px; font-size: 12px; }
+
+#link { position: fixed; right: 18px; bottom: 14px; font-size: 12px; }
+
+.dim { opacity: .35; }
+
+/* The status line and help are debugging affordances -- once the dog is on a
+   shelf, launch with ?bare=1 and nothing but the face is on screen. */
+body.bare #help, body.bare #link { display: none !important; }
