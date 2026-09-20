@@ -70,12 +70,15 @@ local YOLO weights are only needed for the advanced controls' optional boxes.
 5. All three demo buttons connect the Go2 camera. Demos 1 and 2 count five objects
    of any color. OpenAI identifies the current stage, count and appropriate face.
    The legacy Analyze blocks test remains separate under advanced controls.
-6. All demos default to physical Heart/Content gestures. Demo 2 also turns and
-   counts Hello gestures after 12 seconds without progress. Its turn requires live
+6. Movement follows specific lesson events: Content once after completing five
+   objects, Hello gestures to teach 2 + 3, and one thank-you Heart after gentle care.
+   Demo 2 turns and counts Hellos after 12 seconds without progress. Its turn requires live
    heading feedback; an optional forward celebration jump requires the clear-space
    checkbox. Demo 3 uses clear-to-black camera frames as its staged bump cue,
    asks for an apology, and stays still during touch. B/G presenter fallbacks and
    screen rehearsal remain available. See the current [runbook](HARE_DEMO.md).
+   The panel only shows the selected demo's controls. Unavailable cues show the
+   next step; G during the soft-hands prompt waits for speech to finish.
 
 Each role supports one active device tab. Pairing it again revokes its previous
 link. Devices must be paired again after a server restart. A disconnected device

@@ -87,6 +87,10 @@ class HareControlPlane(ControlPlane):
 
     def cancel(self, reason='Activity stopped'):
         super().cancel(reason)
+        if self.demo:
+            self.demo.pending_gentle = False
+            self.demo.pending_count = None
+            self.demo.cue_feedback = None
         if self._io:
             self._io['cancelled'] = True
 
@@ -301,8 +305,9 @@ class HareControlPlane(ControlPlane):
             raise HTTPException(409, 'Start a HARE demo first')
         self.validate_event(data)
         if data['event_id'] not in self.seen_events:
-            self.demo.event(data.get('event'), {key:value for key,value in data.items() if key != 'source'})
-            self._demo_revision += 1
+            outcome = self.demo.presenter_event(data.get('event'), {key:value for key,value in data.items() if key != 'source'})
+            if outcome != 'ignored':
+                self._demo_revision += 1
             self.seen_events.append(data['event_id'])
         return self.status()
 

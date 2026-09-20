@@ -34,7 +34,9 @@ class HareDemo:
         self.jump_clearance = jump_clearance and name == 'run_play' and motion == 'robot_gestures'
         self._actions, self._after_actions = [], ''
         self.action, self.action_history = '', []
-        self._encouraged_counts = set()
+        self.action_reason = ''
+        self.pending_gentle = False
+        self.cue_feedback = None
         self.source = 'none'
         self.fallback = False
         self.equation = ''
@@ -49,7 +51,7 @@ class HareDemo:
         self.adaptation_source = ''
         self.touch_source = 'none'
         self.turn_result = None
-        self.note = 'Go2 Heart, Content and Hello gestures; Demo 2 also turns.' if motion == 'robot_gestures' else 'Screen rehearsal; no physical motion.'
+        self.note = 'Movement follows the lesson: count with Hello, celebrate completion with Content, thank gentle care with Heart.' if motion == 'robot_gestures' else 'Screen rehearsal; no physical motion.'
         self.cue = self.info['intro']
         self.pending_count = None
         self.person_visible = None
@@ -78,26 +80,91 @@ class HareDemo:
             'adaptation_source':self.adaptation_source, 'touch_source':self.touch_source,
             'apology_received':self.apology_received,
             'action':self.action, 'actions_completed':list(self.action_history),
+            'movement_reason':self.movement_reason(), 'cues':self.presenter_cues(),
+            'next_step':self.next_step(), 'cue_feedback':self.cue_feedback,
             'jump_enabled':self.jump_clearance,
             'turn':self.turn_result, 'stall_seconds':self.stall_seconds,
             'timeout_remaining':max(0,round(self.stall_seconds-(self.p.clock()-self.progress_at),1)) if self.name=='run_play' and not self.adapted else None}
 
-    def say(self, text, after, face='Watching', actions=()):
+    def movement_reason(self):
+        if not self.p.running:
+            return ''
+        if self.p.phase == 'turning':
+            return 'Invite the learner back after the inactivity or presenter cue.'
+        if self.p.phase == 'gesturing':
+            return 'Count two Hello gestures, then three more: 2 + 3 = 5.'
+        return self.action_reason if self._actions or self.action else ''
+
+    def next_step(self):
+        p = self.p
+        if not p.running:
+            return 'Demo complete. Choose another demo.' if p.phase == 'complete' else 'Choose a demo to begin.'
+        if self.pending_gentle:
+            return 'Gentle touch recorded. HARE will respond after finishing the soft-hands prompt.'
+        if p.phase in ('demo_action', 'turning', 'gesturing'):
+            return 'Wait for the movement to finish. ' + self.movement_reason()
+        if p.speech:
+            if p._after_speech == 'await_gentle':
+                return 'Show gentle touch. G records it now; HARE responds after this sentence.'
+            if p._after_speech == 'await_apology':
+                return 'When HARE finishes speaking, say “sorry, HARE” or type sorry in the answer fallback.'
+            return 'Wait for HARE to finish speaking. The next available cue will light up.'
+        if p.phase == 'await_bump':
+            return 'Show a clear camera view, then cover it briefly for the bump cue, or press B.'
+        if p.phase == 'await_apology':
+            return 'Say “sorry, HARE” or type sorry in the answer fallback. Then HARE will ask for soft hands.'
+        if p.phase == 'await_gentle':
+            return 'Show gentle touch, then press G to confirm it.'
+        if p.phase in ANSWER_PHASES:
+            return 'Answer how many Hellos: two first, then five altogether.'
+        if p.phase in COUNT_PHASES:
+            return 'Place five objects; F supplies the fallback count.' + (' L cues the learner walking away.' if self.name == 'run_play' and not self.adapted else '')
+        return 'Follow HARE’s spoken prompt.'
+
+    def presenter_cues(self):
+        p = self.p
+        after = p._after_speech if p.speech else None
+        counting = self.name in ('count_check', 'run_play')
+        choices = {
+            'count': (counting and (p.phase in COUNT_PHASES or after in COUNT_PHASES), 'Apply the fallback object count.' if not p.speech else 'Queue the count until the current sentence finishes.'),
+            'learner_left': (self.name == 'run_play' and not self.adapted and p.phase in COUNT_PHASES[:2], 'Invite the learner back and begin Hello counting.'),
+            'bump': (self.name == 'soft_hands' and p.phase == 'await_bump', 'Trigger the staged bump response.'),
+            'gentle': (self.name == 'soft_hands' and not self.pending_gentle and (p.phase == 'await_gentle' or after == 'await_gentle'), 'Confirm gentle touch.' if not p.speech else 'Record gentle touch; respond after HARE finishes the prompt.'),
+        }
+        return {name: {'enabled': bool(p.running and allowed), 'reason': reason if p.running and allowed else self.next_step()}
+                for name, (allowed, reason) in choices.items()}
+
+    def presenter_event(self, name, data):
+        cues = self.presenter_cues()
+        if not isinstance(name, str) or name not in cues:
+            raise HTTPException(400, 'Choose count, learner_left, bump or gentle')
+        cue = cues[name]
+        status, reason = 'ignored', cue['reason']
+        if cue['enabled']:
+            queued = bool(self.p.speech)
+            if name == 'gentle' and queued:
+                self.pending_gentle = True
+            else:
+                self.event(name, data)
+            status = 'queued' if queued else 'applied'
+        self.cue_feedback = {'event': name, 'status': status, 'reason': reason, 'phase': self.p.phase,
+                             'speech_id': self.p.speech['id'] if self.p.speech else None}
+        return status
+
+    def say(self, text, after, face='Watching', actions=(), action_reason=''):
         if actions and self.motion == 'robot_gestures':
             self._actions, self._after_actions = list(actions), after
+            self.action_reason = action_reason
             after = 'demo_action'
         self.p.say(text, after, face)
 
     def begin(self):
         p = self.p
         if self.name in ('count_check','run_play'):
-            self.say("Let's play a counting game! Can you put five objects in front of me?", 'observing', actions=('heart',))
+            self.say("Let's play a counting game! Can you put five objects in front of me?", 'observing')
         elif self.name == 'soft_hands':
-            if self.motion == 'robot_gestures':
-                self.say("Hello, friend! Let's practise being gentle together.", 'await_bump', 'Ready', actions=('content',))
-            else:
-                p.phase, p.face = 'await_bump', 'Ready'
-                p.message = 'Cover the Go2 camera briefly for the staged bump cue, or press B. No impact sensor is connected.'
+            p.phase, p.face = 'await_bump', 'Ready'
+            p.message = 'Ready for Soft Hands. Cover the camera briefly or press B for the staged bump cue.'
         else:
             self.equation = 'Learner stalled → Hello counting\nSame lesson, new shape.' if self.name=='close' else 'It sees.\nIt moves.\nIt cares.'
             self.complete()
@@ -135,12 +202,15 @@ class HareDemo:
             self.say('Ready for gentle paws? Show me your soft hands.', 'await_gentle', 'Encourage')
         elif p.phase == 'complete':
             self.complete()
+        if self.pending_gentle and p.phase == 'await_gentle':
+            self.pending_gentle = False
+            self.presenter_event('gentle', {})
         if self.pending_count is not None and p.phase in COUNT_PHASES:
             count, source = self.pending_count
             self.pending_count = None
             # Queued presenter events are explicit; camera replies are never queued across phases.
             if source == 'presenter':
-                self.count(count, source)
+                self.presenter_event('count', {'count': count})
 
     def start_hellos(self, count, after):
         self.hellos_left, self.hello_after = count, after
@@ -243,7 +313,7 @@ class HareDemo:
         if count==p.target:
             p.task_complete=source=='camera';p.question_id=''
             self.equation=f'{self.baseline} + {p.target-self.baseline} = {p.target}' if self.baseline is not None else str(p.target)
-            self.say('Five objects! Woohoo! Mission complete. We did it together!', 'complete', 'Celebrate', actions=('heart',))
+            self.say('Five objects! Woohoo! Mission complete. We did it together!', 'complete', 'Celebrate', actions=('content',), action_reason='Celebrate the completed five-object mission once.')
         elif count>p.target:
             if count!=previous:
                 self.say("What a collection! Let's keep five. Can you move the extras aside?", 'waiting_blocks','Encourage')
@@ -272,7 +342,7 @@ class HareDemo:
                 p.answer_correct=True
                 if expected==2:
                     self.equation='2 + 3 = ?'
-                    self.say("Two! You got it! Two hellos means two. Ready for three more?",'hello_three_more','Celebrate',actions=('content',))
+                    self.say("Two! You got it! Two hellos means two. Ready for three more?",'hello_three_more','Celebrate')
                 else:
                     self.equation='2 + 3 = 5';p.vision.clear_observation();p.observed=None
                     line = "Five! Woohoo! Two plus three is five. "
@@ -280,7 +350,7 @@ class HareDemo:
                         line += "Give me room for one forward celebration jump! Then let's try our five-object mission again!"
                     else:
                         line += "Let's try our five-object mission again!"
-                    self.say(line,'return_objects','Celebrate',actions=('front_jump' if self.jump_clearance else 'heart',))
+                    self.say(line,'return_objects','Celebrate',actions=('front_jump',) if self.jump_clearance else (), action_reason='Celebrate the correct total after five counted Hellos; forward jump enabled by presenter.')
             else:
                 p.answer_correct=False
                 self.say(f"Let's work it out together. I said hello {NUMBERS[expected]} times. What number is that?",p.phase,'Encourage')
@@ -289,10 +359,7 @@ class HareDemo:
                 raise HTTPException(409,'Check the objects again before answering')
             missing=p.target-p.observed;p.answer_correct=number==missing
             line=f"Yes, {NUMBERS[missing]} more! Let's add {'it' if missing == 1 else 'them'} and see!" if number==missing else f"Let's count together. We have {p.observed} and need five. How many more do we need?"
-            encourage = number == missing and p.observed not in self._encouraged_counts
-            if encourage:
-                self._encouraged_counts.add(p.observed)
-            self.say(line,'waiting_blocks','Encourage',actions=('content',) if encourage else ())
+            self.say(line,'waiting_blocks','Encourage')
         else:
             raise HTTPException(409,'Wait for HARE to finish the current step')
         p.question_id=secrets.token_hex(12)
@@ -313,6 +380,6 @@ class HareDemo:
             line = 'Lovely soft hands! Thank you for being gentle with me.'
             if self.motion == 'robot_gestures':
                 line += " Step back and I'll send you a heart!"
-            self.say(line,'complete','Celebrate',actions=('heart',))
+            self.say(line,'complete','Celebrate',actions=('heart',), action_reason='Thank the learner after the apology and confirmed gentle touch.')
         else:
-            raise HTTPException(409,'That cue does not match the current demo step')
+            raise HTTPException(409,self.next_step())

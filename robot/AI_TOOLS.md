@@ -143,15 +143,22 @@ queued audio and listening windows; a spoken stop also cancels the owning AI run
 `POST /api/plane/start` additionally accepts `demo`: `count_check`, `run_play`,
 `soft_hands`, `close`, or `backup`; `rehearsal`: boolean; and `motion`: `screen`
 or `robot_gestures`, plus the existing control context. All three demos support
-real Heart/Content/Hello choreography; Demo 2 also turns with heading feedback.
+event-driven choreography: Content after the five-object mission, five Hellos for
+the maths game, and Heart after confirmed gentle care. Demo 2 turns with heading feedback.
 Demo 2 can replace its five-Hello celebration with one forward jump when
 `jump_clearance:true` explicitly confirms a clear landing area. It defaults to
 false and is ignored outside physical Demo 2. Caption rehearsal only permits
 screen motion. Poll `demo.action` and `demo.actions_completed` for gesture status.
+`demo.movement_reason` explains the current planned movement.
 
 `POST /api/plane/event` accepts `session_id`, unique `event_id`, and `event`:
 `count` (with integer `count`), `learner_left`, `bump`, or `gentle`.
 These are operator-only presenter cues, not model tools. They cannot override
 STOP, substitute for camera evidence, or skip a step. See [HARE_DEMO.md](HARE_DEMO.md).
+Use `demo.cues[event].enabled` and `demo.next_step` to render the current controls.
+Known but unavailable cues return current state with `demo.cue_feedback.status`
+set to `ignored`, without changing the lesson. A gentle cue during its spoken
+prompt returns `queued` and runs after playback; STOP discards it. Invalid sessions,
+control contexts or unknown cue names still fail validation.
 
 Function schema reference: [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling).

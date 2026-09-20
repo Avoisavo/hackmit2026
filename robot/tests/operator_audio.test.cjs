@@ -16,6 +16,13 @@ async function fixture({micGate,connected=false,configured=true}={}) {
   for(const [,id] of html.matchAll(/id="([^"]+)"/g)) {assert.equal(nodes['#'+id],undefined,'duplicate ID '+id);nodes['#'+id]=makeNode();}
   nodes['#deviceOrigin'].value='http://127.0.0.1:8020';nodes['#robotIp'].value='test-robot';nodes['#demoMotion'].value='screen';
   const demos=['count_check','run_play','soft_hands','close','backup'].map(demo=>makeNode({demo}));
+  const cueButtons=Object.fromEntries(['learner_left','bump','gentle'].map(name=>[name,makeNode({demoEvent:name})]));
+  const scoped=[...html.matchAll(/<[a-z][^>]*\bdata-for-demo="([^"]*)"[^>]*>/g)].map(([tag,forDemo])=>{
+    const id=tag.match(/\bid="([^"]+)"/)?.[1];const node=id?nodes['#'+id]:makeNode();
+    Object.assign(node.dataset,{forDemo,showIdle:tag.match(/data-show-idle="([^"]+)"/)?.[1],trick:tag.match(/data-trick="([^"]+)"/)?.[1]});
+    return node;
+  });
+  function addListener(event,fn){const previous=listeners[event];listeners[event]=value=>{previous?.(value);fn(value);};}
   const state={phase:'idle',message:'Choose a demo',target:3,face:'Ready',events:[],speaker:{ready:true},devices:{mic:{online:true},face:{online:false}},configured:{elevenlabs:configured,deepgram:configured,openai:false},test:{status:'idle',message:''}};
   const status={connected,camera:connected,ip:'test-robot',stop_epoch:1,ai:{busy:false}};
   let socket;
@@ -36,9 +43,9 @@ async function fixture({micGate,connected=false,configured=true}={}) {
     TwinkleFace:class{start(){}setEmote(name){this.name=name;}},renderHare(){},WebSocket:Socket,
     document:{body:{dataset:{token:'test'}},hidden:false,hasFocus:()=>true,
       querySelector(selector){assert.ok(nodes[selector],'Unknown DOM reference '+selector);return nodes[selector];},
-      querySelectorAll(selector){if(selector==='[data-demo]')return demos;if(selector.startsWith('[data-demo],'))return [...demos,nodes['#toolSpeak'],nodes['#toolListen']];return [];},
-      createElement:()=>makeNode(),createTextNode:t=>t,addEventListener:(event,fn)=>{listeners[event]=fn;}},
-    window:{addEventListener:(event,fn)=>{listeners[event]=fn;}},
+      querySelectorAll(selector){if(selector==='[data-demo]')return demos;if(selector.startsWith('[data-demo],'))return [...demos,nodes['#toolSpeak'],nodes['#toolListen']];if(selector==='[data-for-demo]')return scoped;if(selector==='[data-demo-event]')return Object.values(cueButtons);if(selector==='[data-demo-event], #fallbackApply')return [...Object.values(cueButtons),nodes['#fallbackApply']];return [];},
+      createElement:()=>makeNode(),createTextNode:t=>t,addEventListener:addListener},
+    window:{addEventListener:addListener},
     setInterval(){},setTimeout(){},clearTimeout(){},
     fetch:async(url,options)=>{const path=url.replace('/api','');const payload=options.body?JSON.parse(options.body):undefined;calls.push({path,payload});
       const data=path==='/plane/status'?state:path==='/status'?status:path==='/ai/tools'?{tools:[],movements:[],dispatch:{path:'/ai/call',body:{}}}:path==='/plane/pair'?{key:'role-key',path:'/device/'+payload.role}:path==='/connect'?(status.connected=true,{}):state;
@@ -46,8 +53,59 @@ async function fixture({micGate,connected=false,configured=true}={}) {
   });
   vm.runInContext(audio+'\n'+source,context);
   socket.onmessage({data:JSON.stringify({type:'ready',control_id:'test-control'})});await tick();
-  return {nodes,calls,contexts,clients,listeners,track,state,status,render:context.render,demo:name=>demos.find(d=>d.dataset.demo===name).onclick()};
+  return {nodes,calls,contexts,clients,listeners,track,state,status,scoped,cueButtons,render:context.render,
+    key:code=>listeners.keydown({code,key:'',target:{closest:()=>null},preventDefault(){}}),
+    demo:name=>demos.find(d=>d.dataset.demo===name).onclick()};
 }
+test('the selected demo shows only its controls, metrics and options while STOP stays visible',async()=>{
+  const f=await fixture();
+  assert.equal(f.nodes['#manualOverrides'].hidden,true);
+  f.state.running=true;
+  for(const [name,count,game,care] of [['count_check',true,false,false],['run_play',true,true,false],['soft_hands',false,false,true]]){
+    f.state.demo={name};f.render(f.state);
+    assert.equal(f.nodes['#countControls'].hidden,!count);
+    assert.equal(f.nodes['#objectCounts'].hidden,!count);
+    assert.equal(f.nodes['#gameControls'].hidden,!game);
+    assert.equal(f.nodes['#demoTimer'].hidden,!game);
+    assert.equal(f.nodes['#jumpOption'].hidden,!game);
+    assert.equal(f.nodes['#timerOption'].hidden,!game);
+    assert.equal(f.nodes['#careControls'].hidden,!care);
+    assert.equal(f.nodes['#manualOverrides'].hidden,false);
+    assert.equal(f.nodes['#stopAll'].hidden,false);
+    assert.equal(f.nodes['#sendAnswer'].textContent,care?'Submit apology':'Submit answer');
+    for(const node of f.scoped.filter(n=>n.dataset.trick)){
+      assert.equal(node.hidden,!node.dataset.forDemo.split(' ').includes(name));
+    }
+  }
+});
+test('cue buttons follow the server step and irrelevant hotkeys send no commands',async()=>{
+  const f=await fixture();f.state.running=true;f.state.phase='observing';
+  f.state.demo={name:'count_check',cues:{count:{enabled:true,reason:'Fallback count'}}};f.render(f.state);
+  assert.equal(f.nodes['#fallbackApply'].disabled,false);
+  f.key('KeyB');f.key('KeyG');f.key('KeyL');await tick();
+  assert.equal(f.calls.some(c=>c.path==='/plane/event'),false);
+  f.state.demo={name:'soft_hands',next_step:'Say sorry first.',cues:{bump:{enabled:false},gentle:{enabled:false,reason:'Say sorry first.'}}};
+  f.state.phase='await_apology';f.render(f.state);
+  assert.equal(f.cueButtons.gentle.disabled,true);
+  f.key('KeyG');await tick();assert.equal(f.calls.some(c=>c.path==='/plane/event'),false);
+  assert.equal(f.nodes['#cueFeedback'].textContent,'Say sorry first.');
+  assert.equal(f.nodes['#error'].textContent,'');
+  f.state.phase='speaking';f.state.speech={id:'soft-hands-line'};
+  f.state.demo.cues.gentle={enabled:true,reason:'Record touch after this line'};f.render(f.state);
+  assert.equal(f.cueButtons.gentle.disabled,false);
+  assert.equal(f.nodes['#cueFeedback'].textContent,'');
+  await f.cueButtons.gentle.onclick();
+  assert.equal(f.calls.filter(c=>c.path==='/plane/event').length,1);
+  assert.equal(f.calls.find(c=>c.path==='/plane/event').payload.event,'gentle');
+});
+test('selecting a demo updates its controls during audio preparation and closes advanced settings',async()=>{
+  const gate=deferred();const f=await fixture({micGate:gate});f.nodes['#setupPanel'].open=true;
+  const pending=f.demo('soft_hands');
+  assert.equal(f.nodes['#careControls'].hidden,false);
+  assert.equal(f.nodes['#countControls'].hidden,true);
+  assert.equal(f.nodes['#setupPanel'].open,false);
+  gate.resolve();await pending;
+});
 test('Demo 3 apology enables typed fallback and displays care progress instead of maths grading',async()=>{
   const f=await fixture();
   f.state.running=true;f.state.phase='await_apology';

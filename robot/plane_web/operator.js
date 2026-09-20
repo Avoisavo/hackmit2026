@@ -9,6 +9,13 @@ let socket, controlId = '', controlReady = false, leaving = false, retry;
 let activity = {}, robot = {}, generation = 0, starting = false, pending = false, cameraSource = '', testing = false, catalog = null;
 const localDevices = {};
 let preparing = false, preparationMessage = '';
+let cueNotice = null;
+let selectedDemo = '';
+const demoViews = {
+  count_check: {title: 'Demo 1 · Count and Check', cues: ['count'], hint: 'Use F if the camera misses the object count. Answer the maths question by voice or use the fallback below.', plan: 'HARE stays still while objects are placed and answers are given. Completing five objects triggers one Content celebration.'},
+  run_play: {title: 'Demo 2 · Come Back and Count', cues: ['count','learner_left'], hint: 'Use L to cue the learner walking away. Answer two, then five during Hello counting. F supplies the object count when the mission returns.', plan: 'After inactivity or L, HARE turns and counts exactly two plus three Hello gestures. An enabled forward jump celebrates the correct total. Completing five objects triggers one Content celebration.'},
+  soft_hands: {title: 'Demo 3 · Soft Hands', cues: ['bump','gentle'], hint: 'Cover the camera or press B. Say sorry when HARE asks; then show gentle touch and press G. G can record the touch while the soft-hands prompt finishes.', plan: 'HARE stays still for the bump, apology and gentle touch. After confirmed care it asks the learner to step back, then gives one thank-you Heart.'},
+};
 const audioMessages = {};
 const audioSetup = new AudioSetup({pair, devices: localDevices, report(role, text) {
   audioMessages[role] = text;
@@ -65,8 +72,34 @@ setInterval(() => {
     socket.send(JSON.stringify({type: 'move', forward: 0, left: 0, turn: 0}));
 }, 100);
 
+function renderRelevantControls(state) {
+  if (state.running && state.demo) selectedDemo = state.demo.name;
+  else if (!selectedDemo && state.demo) selectedDemo = state.demo.name;
+  const view = demoViews[selectedDemo];
+  document.querySelectorAll('[data-for-demo]').forEach(node => {
+    node.hidden = selectedDemo ? !node.dataset.forDemo.split(' ').includes(selectedDemo) : node.dataset.showIdle !== 'true';
+  });
+  document.querySelectorAll('[data-demo]').forEach(button => {
+    button.dataset.selected = String(button.dataset.demo === selectedDemo);
+    button.ariaPressed = button.dataset.selected;
+  });
+  const legacy = state.running && !state.demo;
+  $('#manualOverrides').hidden = !view && !legacy;
+  $('#demoControlsTitle').textContent = view ? view.title + ' controls' : 'Answer fallback';
+  $('#demoControlsHint').textContent = view?.hint || '';
+  $('#movementPlan').textContent = (view?.plan || 'Movements follow the lesson.') + ' STOP / Space cancels the sequence.';
+  const care = selectedDemo === 'soft_hands';
+  $('#answerLabel').textContent = care ? 'Apology fallback' : 'Maths answer fallback';
+  $('#answerHint').textContent = care ? 'If the microphone misses it, type sorry after HARE asks for an apology.' : 'If the microphone misses it, type the learner’s number when HARE asks.';
+  $('#answer').placeholder = care ? 'Sorry, HARE' : 'Learner’s number, e.g. one';
+  $('#sendAnswer').textContent = care ? 'Submit apology' : 'Submit answer';
+  $('#outcome').hidden = !view && !legacy;
+  return selectedDemo === state.demo?.name;
+}
+
 function render(state) {
   activity = state;
+  const matchingDemo = renderRelevantControls(state);
   $('#stopAll').hidden = false;
   $('#liveActivity').hidden = false;
   renderMonitor(state);
@@ -76,14 +109,23 @@ function render(state) {
   const io = state.audio_tool;
   $('#audioToolResult').textContent = io ? `${io.status}: ${io.result ? JSON.stringify(io.result) : 'Ready for a speech or listening tool call.'}` : '';
   document.querySelectorAll('[data-demo], #toolSpeak, #toolListen').forEach(button => { button.disabled = testing || preparing || state.running || state.busy || robot.ai?.busy || !controlReady; });
-  document.querySelectorAll('[data-demo-event], #fallbackApply').forEach(button => { button.disabled = !state.running || !state.demo; });
+  document.querySelectorAll('[data-demo-event], #fallbackApply').forEach(button => {
+    const cue = state.demo?.cues?.[button.dataset.demoEvent || 'count'];
+    button.disabled = !state.running || !matchingDemo || !controlReady || !cue?.enabled;
+    button.title = cue?.reason || 'Choose a demo to begin.';
+  });
+  $('#nextStep').textContent = state.demo?.next_step || 'Choose a demo to begin.';
+  if (cueNotice && (cueNotice.session !== state.session_id || cueNotice.phase !== state.phase || cueNotice.speechId !== state.speech?.id)) cueNotice = null;
+  const feedback = state.demo?.cue_feedback;
+  $('#cueFeedback').textContent = cueNotice?.text || (feedback?.phase === state.phase && feedback.speech_id === (state.speech?.id || null) ? feedback.reason : '');
   if (face.name !== state.face) face.setEmote(state.face || 'Ready');
   $('#activityPhase').textContent = state.phase.replaceAll('_', ' ');
   $('#activityMessage').textContent = state.message;
   $('#goalCount').textContent = state.target;
   $('#seenCount').textContent = state.observed ?? '—';
   $('#startActivity').disabled = starting || state.running || state.busy || robot.ai?.busy || !controlReady;
-  $('#sendAnswer').disabled = !state.running || !['waiting_answer','waiting_blocks','answer_two','answer_five','await_apology'].includes(state.phase);
+  $('#sendAnswer').disabled = !state.running || (state.demo && !matchingDemo) || !['waiting_answer','waiting_blocks','answer_two','answer_five','await_apology'].includes(state.phase);
+  $('#answer').disabled = $('#sendAnswer').disabled;
   $('#expression').disabled = false;
   $('#expression').value = state.face;
   $('#voiceHealth').textContent = `Speaker ${state.speaker.ready ? 'ready' : 'offline'} · ${state.devices.mic.online ? 'Mic online' : 'Mic offline'}`;
@@ -127,8 +169,8 @@ function renderMonitor(state) {
   const moving = state.running && physical && ['turning','gesturing','demo_action'].includes(state.phase);
   const actionName = state.demo?.action === 'front_jump' ? 'Forward jump' : state.demo?.action;
   const motion = moving ? state.phase === 'turning' ? 'Turning with heading feedback' : state.phase === 'demo_action' ? `${actionName || 'Preparing gesture'} · ${(state.demo.actions_completed || []).length} gestures completed` : `Hello gesture · ${state.demo.hellos} completed` : robot.ai?.busy ? robot.ai.message : robot.recovering ? 'Recovering stance' : robot.busy ? 'Robot action in progress' : robot.armed ? 'Movement enabled' : 'Disarmed';
-  health('#motionHealth', `${motion} · ${robot.stance || 'posture unknown'}`, moving || robot.armed || robot.busy ? 'active' : 'idle');
-  health('#modeHealth', `${state.demo ? physical ? 'Go2 gestures' + (state.demo.jump_enabled ? ' + forward jump' : '') : 'Screen rehearsal' : $('#demoMotion').value === 'robot_gestures' ? 'Go2 Heart, Content + Hello selected' : 'Screen rehearsal'} · ${robot.heading?.ready ? 'heading live' : 'heading unavailable'}`);
+  health('#motionHealth', `${motion} · ${robot.stance || 'posture unknown'}${state.demo?.movement_reason ? ' · ' + state.demo.movement_reason : ''}`, moving || robot.armed || robot.busy ? 'active' : 'idle');
+  health('#modeHealth', `${state.demo ? physical ? 'Lesson movements' + (state.demo.jump_enabled ? ' + forward jump' : '') : 'Screen rehearsal' : $('#demoMotion').value === 'robot_gestures' ? 'Lesson movements selected' : 'Screen rehearsal'} · ${robot.heading?.ready ? 'heading live' : 'heading unavailable'}`);
   $('#preparationStatus').textContent = preparationMessage;
 }
 
@@ -278,6 +320,14 @@ window.addEventListener('pageshow', event => { if (event.persisted) location.rel
 
 async function demoEvent(event, extra = {}) {
   if (!activity.running || !activity.demo) return;
+  if (selectedDemo !== activity.demo.name || !demoViews[selectedDemo]?.cues.includes(event)) return;
+  const cue = activity.demo.cues?.[event];
+  if (!cue?.enabled) {
+    cueNotice = {session: activity.session_id, phase: activity.phase, speechId: activity.speech?.id, text: cue?.reason || activity.demo.next_step || 'Wait for the next cue.'};
+    render(activity);
+    return;
+  }
+  cueNotice = null;
   render(await request('/plane/event', {event, ...extra, session_id: activity.session_id, event_id: crypto.randomUUID()}));
 }
 function preparationGuard(epoch) {
@@ -328,6 +378,11 @@ async function prepareDemo(name, rehearsal) {
 }
 document.querySelectorAll('[data-demo]').forEach(button => {
   button.onclick = () => runTest(async () => {
+    selectedDemo = button.dataset.demo;
+    cueNotice = null;
+    $('#answer').value = '';
+    $('#setupPanel').open = false;
+    renderRelevantControls(activity);
     const check = preparationGuard(generation);
     const rehearsal = $('#rehearsal').checked;
     await prepareDemo(button.dataset.demo, rehearsal);

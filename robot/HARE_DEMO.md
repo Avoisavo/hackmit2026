@@ -1,7 +1,7 @@
 # HARE presenter runbook
 
 Start the `dog` checkout with `robot/start-control-plane.sh`, then open
-<http://127.0.0.1:8020/plane>. The build label includes **PLAYFUL VOICE + SAY SORRY · LIVE GESTURES**.
+<http://127.0.0.1:8020/plane>. The build label includes **DEMO VIEWS V8**.
 The server reads the repository's private `.env.local`, even with plain Uvicorn.
 Explicit environment settings override that file. No credentials belong in Git.
 
@@ -12,6 +12,10 @@ Save connections clicks are needed. The microphone waits while HARE speaks.
 **Go2 gestures** is the default for all three demos. **Setup & advanced controls
 → Demo options** offers screen rehearsal and the optional forward jump. The
 movement monitor names each action; the event log records completed commands.
+The selected demo shows only its controls: Demo 1 has count and maths-answer
+fallbacks; Demo 2 adds the walk-away cue, inactivity timer and jump option; Demo 3
+shows bump, apology and gentle-touch controls. STOP and system status stay visible.
+Face overrides, hardware tests and manual movements are under advanced controls.
 
 ## Demo 1 — Count and Check
 
@@ -23,9 +27,9 @@ Place four. OpenAI checks two fresh camera frames; when both counts agree with
 high confidence, HARE asks **“I spy four! We're aiming for five. How many more do we need?”** Saying
 “one” encourages adding it. Place the fifth object: a new camera observation
 completes the check and shows **4 + 1 = 5**. A spoken answer alone cannot complete
-the physical task. HARE performs **Heart** at the opening, **Content** after the
-correct spoken answer (once per object count), and **Heart** when the five-object
-mission finishes. Each action waits until its preceding speech has finished.
+the physical task. HARE stays still while objects are placed and questions are
+answered. Completing the five-object mission triggers one **Content** celebration
+after the success line. There are no opening or mid-answer tricks.
 
 If needed, use **Fallback object count** and **F**. Presenter counts are labelled
 as overrides and never claim camera verification.
@@ -39,23 +43,23 @@ unavailable. The monitor distinguishes a timeout assumption from a timeout with
 recent camera evidence that no person is visible; neither measures attention or
 emotion. **L** is the presenter override for this transition.
 
-Demo 2 opens with **Heart**, then uses **Go2 half-turn + Hello gestures**:
+Demo 2 stays still during its object mission. After the inactivity/leave cue:
 
 1. HARE makes one half-turn in place, using live IMU heading feedback, then stops.
 2. It says **“Game switch! Come back! Let's count my silly hellos together!”**
 3. It performs Hello twice, saying **“Hello!”** after each completed gesture.
 4. It asks **“Your turn, counting buddy! How many hellos did you count?”** Answer **“two.”**
 5. It says **“Two! You got it! Two hellos means two. Ready for three more?”**
-   and performs **Content**. This is not counted as a Hello.
 6. It performs three more Hello gestures and asks for the total. Answer **“five.”**
 7. It explains **“Five! Woohoo! Two plus three is five. Let's try our five-object
-   mission again!”** It performs **Heart**, then the camera checks the final group
-   of five. Completing that mission adds a final **Heart**.
+   mission again!”** The camera checks the final group of five. Completing that
+   mission triggers one **Content** celebration. No other gestures interrupt the
+   Hello counting sequence.
 
 For a jump, select **Demo 2: add one forward celebration jump** before starting.
 This confirms at least 2 m of clear, flat space ahead with people and objects
 outside the landing area. After the answer **five**, HARE asks for room and
-performs one tested **FrontJump** instead of that Heart, then returns to objects.
+performs one tested **FrontJump**, then returns to objects.
 The jump moves forward; it is not an in-place hop. The checkbox is off by default,
 applies only to Demo 2, and never enables jumps in screen/caption rehearsal or
 the camera AI's unrestricted tool loop. A refusal stops the demo without retry.
@@ -73,8 +77,8 @@ Choose **Screen rehearsal** for voice with visual gestures and no movement.
 
 ## Demo 3 — Soft Hands
 
-HARE greets the learner with **Content**, then waits for the bump cue. Wait for
-that gesture to finish and show a clear Go2 view. Cover the Go2 camera until its image is black for
+HARE is ready for the bump cue immediately and stays still. Show a clear Go2 view,
+then cover the Go2 camera until its image is black for
 about one second. The detector requires three or more advancing frames spanning
 at least half a second after a clear baseline. This is the staged rough-touch
 cue; do not actually hit the robot. A disconnected/stale camera, a brief flicker,
@@ -92,8 +96,8 @@ HARE waits for an apology, then says:
 - **“Thank you for saying sorry! That was kind. We're a team!”**
 - **“Ready for gentle paws? Show me your soft hands.”**
 
-If the mic misses the apology, type **sorry** in **Manual override → Operator
-answer fallback**. Caption rehearsal uses this same typed fallback.
+If the mic misses the apology, type **sorry** in **Demo 3 controls → Apology
+fallback**. Caption rehearsal uses this same typed fallback.
 
 After the gentle touch, press **G**. HARE says **“Lovely soft hands! Thank you for being gentle with me.”** Gentle
 touch remains a presenter event; there is no touch or force sensor. **B** remains
@@ -102,6 +106,10 @@ not proof of an impact or pain. Uncover the camera after the cue.
 In Go2 mode, it adds **“Step back and I'll send you a heart!”**, then performs
 **Heart** after the line finishes. There is no motor action during the rough-touch,
 apology or gentle-touch waiting phases. Demo 3 never jumps.
+G also works during the **“Show me your soft hands”** sentence: it records one
+cue and waits for that sentence to finish. It cannot skip the apology. STOP clears
+pending cues. Early/repeated cues show the current next step without replaying
+speech or triggering a motion.
 
 ## OpenAI stages and HB expressions
 
@@ -142,6 +150,8 @@ Shortcuts do not fire while typing. Keep the dashboard focused. STOP, lost focus
 controller loss, robot loss during physical actions, or speaker failure cancels
 the sequence. Camera loss/covering blocks physical actions. A firmware gesture
 already accepted by the robot may still finish. No action is retried automatically.
+Only shortcuts belonging to the selected demo send requests. Controls are enabled
+for the current step, and the **Next step** line tells the presenter what to do.
 
 Closing/backup slides, component tests, the old blocks activity and tool reference
 remain in advanced controls. `/controls` retains direct driving controls;

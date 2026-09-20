@@ -71,6 +71,11 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         return await self.device('mic','transcript',{'text':text,'session_id':self.plane.session_id,
             'question_id':self.plane.question_id,'event_id':f'answer_{self.event_number:08d}',**extra})
 
+    async def ignored_event(self, name):
+        response = await self.event(name)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['demo']['cue_feedback']['status'], 'ignored')
+
     async def hellos(self, number):
         for _ in range(number):
             await self.plane.demo.tick()
@@ -138,16 +143,16 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         await self.speech(); await self.actions()
         self.assertEqual(self.plane.phase, 'complete')
         self.assertIn('Hello gestures', self.plane.demo.cue)
-        self.assertEqual([call.args[0] for call in self.demo_gesture.await_args_list], ['heart','content','heart','heart'])
+        self.assertEqual([call.args[0] for call in self.demo_gesture.await_args_list], ['content'])
 
     async def test_stall_timer_adapts_once_without_inferring_emotions(self):
         await self.start('run_play'); await self.speech(); self.camera(0)
         self.now+=12; await self.plane.demo.tick()
         self.assertTrue(self.plane.demo.adapted)
         self.assertIn('No object or answer progress',self.plane.events[-1]['text'])
-        self.assertEqual((await self.event('learner_left')).status_code,409)
+        await self.ignored_event('learner_left')
 
-    async def test_count_demo_gestures_after_speech_and_encourages_each_count_only_once(self):
+    async def test_count_demo_stays_still_until_the_objects_are_complete_then_celebrates_once(self):
         await self.start(motion='robot_gestures',jump_clearance=True)
         self.assertTrue(self.plane.requires_robot)
         self.assertFalse(self.plane.demo.jump_clearance)
@@ -155,14 +160,14 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         await self.speech(); await self.actions()
         self.camera(4); await self.speech(); await self.answer('one')
         await self.speech(); await self.actions()
-        self.assertEqual([call.args[0] for call in self.demo_gesture.await_args_list],['heart','content'])
+        self.demo_gesture.assert_not_awaited()
         await self.answer('one'); await self.speech(); await self.actions()
-        self.assertEqual(self.demo_gesture.await_count,2)
+        self.demo_gesture.assert_not_awaited()
         self.camera(5); await self.speech()
         self.assertTrue(self.plane.running)
         await self.actions()
         self.assertFalse(self.plane.running)
-        self.assertEqual(self.plane.demo.action_history,['heart','content','heart'])
+        self.assertEqual(self.plane.demo.action_history,['content'])
 
     async def test_forward_jump_is_one_opted_in_demo_two_celebration(self):
         await self.start('run_play',motion='robot_gestures',jump_clearance=True)
@@ -180,18 +185,18 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_soft_hands_stays_still_during_touch_and_waits_for_step_back_line_before_heart(self):
         await self.start('soft_hands',motion='robot_gestures',jump_clearance=True)
-        await self.speech(); await self.actions()
-        self.assertEqual(self.plane.demo.action_history,['content'])
+        self.assertEqual(self.plane.phase,'await_bump')
+        self.demo_gesture.assert_not_awaited()
         await self.event('bump')
         for _ in range(3): await self.speech()
         await self.answer('sorry'); await self.speech(); await self.speech()
         self.assertEqual(self.plane.phase,'await_gentle')
-        self.assertEqual(self.demo_gesture.await_count,1)
+        self.demo_gesture.assert_not_awaited()
         await self.event('gentle')
         self.assertIn('Step back',self.plane.speech['text'])
-        self.assertEqual(self.demo_gesture.await_count,1)
+        self.demo_gesture.assert_not_awaited()
         await self.speech(); await self.actions()
-        self.assertEqual(self.plane.demo.action_history,['content','heart'])
+        self.assertEqual(self.plane.demo.action_history,['heart'])
         self.assertFalse(self.plane.running)
 
     async def test_new_gestures_reject_stale_or_black_camera_and_wrong_demo(self):
@@ -201,6 +206,7 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
                 self.vision.camera_fresh.return_value=True
                 self.vision.get_frame=lambda:(jpeg('white'),self.now,1)
                 await self.start(motion='robot_gestures'); await self.speech()
+                self.camera(5); await self.speech()
                 old_demo=self.plane.demo
                 if invalid=='stale': self.vision.camera_fresh.return_value=False
                 elif invalid=='black': self.vision.get_frame=lambda:(jpeg('black'),self.now,1)
@@ -211,13 +217,14 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_during_gesture_cannot_advance_or_issue_another_action(self):
         await self.start(motion='robot_gestures'); await self.speech()
+        self.camera(5); await self.speech()
         entered,release=asyncio.Event(),asyncio.Event()
         async def gesture(action,check):
             entered.set(); await release.wait(); check()
         self.demo_gesture.side_effect=gesture
         pending=asyncio.create_task(self.plane.demo.tick())
-        await entered.wait()
-        self.assertEqual(self.plane.status()['demo']['action'],'heart')
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertEqual(self.plane.status()['demo']['action'],'content')
         self.plane.cancel('STOP'); release.set()
         with self.assertRaises(HTTPException): await pending
         self.assertEqual(self.plane.phase,'stopped')
@@ -236,7 +243,7 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_soft_hands_presenter_cues_are_ordered_and_deduplicated(self):
         await self.start('soft_hands')
-        self.assertEqual((await self.event('gentle')).status_code,409)
+        await self.ignored_event('gentle')
         payload={'event':'bump','session_id':self.plane.session_id,'event_id':'bump_123456'}
         self.assertEqual((await self.client.post('/api/plane/event',json=payload)).status_code,200)
         speech_id=self.plane.speech['id']
@@ -250,7 +257,7 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         await self.speech()
         self.assertEqual(self.plane.phase,'await_apology')
         self.assertTrue((await self.device('mic','state')).json()['listen'])
-        self.assertEqual((await self.event('gentle')).status_code,409)
+        await self.ignored_event('gentle')
         apology={'text':'Sorry, HARE!','session_id':self.plane.session_id,
             'question_id':self.plane.question_id,'event_id':'apology_123456'}
         self.assertEqual((await self.device('mic','transcript',apology)).status_code,200)
@@ -273,7 +280,7 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
             old_question=self.plane.question_id
             self.assertEqual((await self.answer(text)).status_code,200)
             self.assertFalse(self.plane.demo.apology_received)
-            self.assertEqual((await self.event('gentle')).status_code,409)
+            await self.ignored_event('gentle')
             await self.speech()
             self.assertEqual(self.plane.phase,'await_apology')
             self.assertEqual((await self.answer('sorry',question_id=old_question)).status_code,409)
@@ -281,6 +288,64 @@ class HareTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.plane.running)
         self.assertEqual((await self.answer('sorry')).status_code,409)
         self.assertFalse(self.plane.demo.apology_received)
+
+    async def test_cues_are_step_specific_and_stale_or_repeated_cues_do_not_interrupt(self):
+        await self.start('soft_hands',motion='robot_gestures')
+        cues=self.plane.status()['demo']['cues']
+        self.assertEqual({name for name,value in cues.items() if value['enabled']},{'bump'})
+        revision=self.plane._demo_revision
+        await self.ignored_event('gentle')
+        self.assertEqual(self.plane._demo_revision,revision)
+        self.assertEqual(self.plane.phase,'await_bump')
+        await self.event('bump'); speech_id=self.plane.speech['id']
+        await self.ignored_event('bump')
+        self.assertEqual(self.plane.speech['id'],speech_id)
+        for _ in range(3): await self.speech()
+        self.assertIn('sorry',self.plane.status()['demo']['next_step'])
+        await self.ignored_event('gentle')
+        self.assertFalse(self.plane.demo.pending_gentle)
+        self.demo_gesture.assert_not_awaited()
+        self.assertEqual((await self.event('not_a_cue')).status_code,400)
+
+    async def test_gentle_cue_during_its_prompt_is_queued_once_until_speech_finishes(self):
+        await self.start('soft_hands',motion='robot_gestures'); await self.event('bump')
+        for _ in range(3): await self.speech()
+        await self.answer('sorry'); await self.speech()
+        self.assertTrue(self.plane.status()['demo']['cues']['gentle']['enabled'])
+        prompt_id=self.plane.speech['id']
+        response=await self.event('gentle')
+        self.assertEqual(response.json()['demo']['cue_feedback']['status'],'queued')
+        self.assertEqual(self.plane.speech['id'],prompt_id)
+        self.assertFalse(self.plane.status()['demo']['cues']['gentle']['enabled'])
+        await self.ignored_event('gentle')
+        self.demo_gesture.assert_not_awaited()
+        await self.speech()
+        self.assertIn('Lovely soft hands',self.plane.speech['text'])
+        self.assertFalse(self.plane.demo.pending_gentle)
+        await self.speech(); await self.actions()
+        self.assertEqual(self.plane.demo.action_history,['heart'])
+
+    async def test_stop_discards_queued_gentle_touch(self):
+        await self.start('soft_hands',motion='robot_gestures'); await self.event('bump')
+        for _ in range(3): await self.speech()
+        await self.answer('sorry'); await self.speech(); await self.event('gentle')
+        payload={'session_id':self.plane.session_id,'speech_id':self.plane.speech['id'],'status':'ended'}
+        self.plane.cancel('STOP')
+        self.assertFalse(self.plane.demo.pending_gentle)
+        self.assertEqual((await self.device('speaker','speech',payload)).status_code,409)
+        self.demo_gesture.assert_not_awaited()
+
+    async def test_count_fallback_queues_during_prompt_and_unrelated_cues_are_ignored(self):
+        await self.start()
+        self.assertTrue(self.plane.status()['demo']['cues']['count']['enabled'])
+        for name in ('bump','gentle','learner_left'): await self.ignored_event(name)
+        response=await self.event('count',count=4)
+        self.assertEqual(response.json()['demo']['cue_feedback']['status'],'queued')
+        self.assertIsNone(self.plane.observed)
+        await self.speech()
+        self.assertEqual(self.plane.observed,4)
+        self.assertEqual(self.plane.demo.cue_feedback['status'],'applied')
+        self.assertEqual(self.plane.demo.source,'presenter')
 
     async def test_soft_hands_accepts_natural_apologies_without_maths_grading(self):
         for text in ('Sorry!', "I'm sorry, HARE.", 'I’m so sorry.', 'I am really sorry', 'Okay, sorry HARE'):
