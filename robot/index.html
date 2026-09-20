@@ -30,6 +30,9 @@
     width: 180px; max-width: 100%; margin: 4px;
   }
   button.risky { background: #5a3a1e; }
+  a { color: #9ed8ff; }
+  #controlBoxes { width: auto; margin: 12px 6px 12px 0; accent-color: #a5edcc; }
+  #cam.stale { opacity: 0.25; }
   #stop { background: #b42335; width: 100%; font-size: 22px; }
   #arm.on { background: #1f7a3a; }
   #hint { color: #ffd166; min-height: 1.4em; }
@@ -58,6 +61,7 @@
 </style>
 
 <h1>Go2 Control</h1>
+<p><a href="/vision">Open camera object recognition &amp; counting →</a></p>
 <p id="status">Loading…</p>
 <p id="hint">Connect robot, then hold W/A/S/D/Q/E or a direction button. Movement runs Recovery stand once, then Balance stand, before driving.</p>
 <p id="error"></p>
@@ -79,6 +83,8 @@
 <div class="panel">
   <h2>Camera</h2>
   <img id="cam" alt="Camera appears after Connect">
+  <label><input id="controlBoxes" type="checkbox" checked>Show labeled object boxes</label>
+  <p id="boxesStatus" class="small" role="status">Connect the robot to start object detection.</p>
   <p class="small">Motion mode: <b id="modeName">unknown</b>
     <button onclick="mode('normal')">Switch to Normal</button>
     <button onclick="mode('ai')">Switch to AI</button>
@@ -153,6 +159,8 @@ const hint = document.querySelector("#hint");
 const errorBox = document.querySelector("#error");
 const armButton = document.querySelector("#arm");
 const cam = document.querySelector("#cam");
+const controlBoxes = document.querySelector("#controlBoxes");
+const boxesStatus = document.querySelector("#boxesStatus");
 const modeName = document.querySelector("#modeName");
 const robotIp = document.querySelector("#robotIp");
 const connectButton = document.querySelector("#connectButton");
@@ -174,6 +182,10 @@ let haltCount = 0;  // a halt during the multi-second arm sequence must win
 let commandInFlight = false;
 let autoEnable = false;  // a successful trick may enable movement after recovery
 let camConnected = false;
+let cameraLive = false;
+let cameraSource = "";
+let boxesState = null;
+let sessionExpired = false;
 let socket = new WebSocket(
   `ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`
 );
@@ -325,12 +337,49 @@ function mode(name) {
   return command("/mode/" + name);
 }
 
+function desiredCameraSource() {
+  return controlBoxes.checked && !boxesState?.error
+    ? "/camera.boxes.mjpeg" : "/camera.mjpeg";
+}
+
 function showCamera(on) {
-  camConnected = on;
-  cam.src = on
-    ? `/camera.mjpeg?token=${encodeURIComponent(token)}&t=${Date.now()}`
+  camConnected = on && !sessionExpired;
+  cameraSource = camConnected ? desiredCameraSource() : "";
+  cam.src = camConnected
+    ? `${cameraSource}?token=${encodeURIComponent(token)}&t=${Date.now()}`
     : "";
 }
+
+function renderBoxesStatus() {
+  const freshBoxes = boxesState?.state === "running" &&
+    Number.isFinite(boxesState.frame_age_seconds) && boxesState.frame_age_seconds < 3;
+  cam.classList.toggle("stale", camConnected && (!cameraLive ||
+    (controlBoxes.checked && !boxesState?.error && !freshBoxes)));
+  if (sessionExpired) {
+    boxesStatus.textContent = "Reload this page to restore the camera session.";
+  } else if (!camConnected) {
+    boxesStatus.textContent = "Connect the robot to start object detection.";
+  } else if (!controlBoxes.checked) {
+    boxesStatus.textContent = "Object boxes off · showing raw camera.";
+  } else if (boxesState?.error) {
+    boxesStatus.textContent = `${boxesState.error} Showing raw camera. Toggle boxes off and on to retry.`;
+  } else if (freshBoxes) {
+    const count = Number.isInteger(boxesState.count) ? boxesState.count : 0;
+    const fps = Number.isFinite(boxesState.fps) ? boxesState.fps.toFixed(1) : "—";
+    boxesStatus.textContent = `Object boxes · ${count} detections · ${fps} fps`;
+  } else {
+    boxesStatus.textContent = cameraLive
+      ? "Waiting for fresh object detections…"
+      : "Waiting for a fresh camera frame…";
+  }
+}
+
+controlBoxes.onchange = () => {
+  // A new subscriber retries a failed detector; no robot commands are sent.
+  if (controlBoxes.checked && boxesState?.error) boxesState = null;
+  if (camConnected) showCamera(true);
+  renderBoxesStatus();
+};
 cam.onerror = () => {
   if (camConnected) setTimeout(() => { if (camConnected) showCamera(true); }, 2000);
 };
@@ -408,6 +457,9 @@ setInterval(async () => {
     });
     if (response.status === 403) {
       setEnabled(false);
+      sessionExpired = true;
+      showCamera(false);
+      renderBoxesStatus();
       note("The server was restarted and this page holds the old session token. Reload this page.");
       return;
     }
@@ -426,7 +478,11 @@ setInterval(async () => {
     if (!ipEdited && !connecting && document.activeElement !== robotIp) {
       robotIp.value = state.ip;
     }
-    if (state.connected !== camConnected) showCamera(state.connected);
+    boxesState = state.boxes || null;
+    cameraLive = Boolean(state.camera);
+    if (state.connected !== camConnected ||
+        (state.connected && cameraSource !== desiredCameraSource())) showCamera(state.connected);
+    renderBoxesStatus();
     // Adopt automatic enabling only for this window's successful trick.
     // STOP/blur and newer commands invalidate both that permission and old polls.
     if (epoch === armEpoch && !arming && !commandInFlight) {

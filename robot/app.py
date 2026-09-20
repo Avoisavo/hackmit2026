@@ -24,6 +24,13 @@ from unitree_webrtc_connect.webrtc_driver import (
 )
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
 
+if __package__:
+    from .box_service import BoxService
+    from .vision_service import VisionService
+else:
+    from box_service import BoxService
+    from vision_service import VisionService
+
 
 # The library runs the LAN signaling handshake with blocking sockets on the
 # event loop and issues its HTTP requests without a timeout. Left as is, a
@@ -189,6 +196,7 @@ last_error = ""
 motion_mode = ""
 latest_jpeg = b""
 frame_at = 0.0
+camera_session = 0
 action_lock = asyncio.Lock()
 recovery_task = None  # scheduled automatic recovery after a trick
 command_seq = 0       # bumps on every accepted sport reply
@@ -271,12 +279,16 @@ async def watchdog():
 
 
 async def disconnect():
-    global robot, motion_mode, latest_jpeg, stance, recovery_needed
+    global robot, motion_mode, latest_jpeg, frame_at, camera_session, stance, recovery_needed
     cancel_scheduled_recovery()
     stop()
+    camera_session += 1
+    vision.invalidate_camera()
+    boxes.invalidate_camera()
     old, robot = robot, None
     motion_mode = ""
     latest_jpeg = b""
+    frame_at = 0.0
     stance = "unknown"
     recovery_needed = True
     if old:
@@ -587,18 +599,24 @@ def encode_jpeg(frame):
 async def read_video(track):
     # Registered with the driver's video channel; runs until the track ends.
     global latest_jpeg, frame_at
+    source_robot, source_session = robot, camera_session
     next_at = 0.0
     while True:
         try:
             frame = await track.recv()
         except Exception:
             return
+        if robot is not source_robot or camera_session != source_session:
+            return
         now = time.monotonic()
         if now < next_at:
             continue  # drop frames down to CAMERA_FPS
         next_at = now + 1 / CAMERA_FPS
         try:
-            latest_jpeg = await asyncio.to_thread(encode_jpeg, frame)
+            jpeg = await asyncio.to_thread(encode_jpeg, frame)
+            if robot is not source_robot or camera_session != source_session:
+                return
+            latest_jpeg = jpeg
             frame_at = time.monotonic()
         except Exception as exc:
             print(f"Camera frame encode failed: {exc}")
@@ -619,9 +637,15 @@ async def lifespan(app):
     with contextlib.suppress(asyncio.CancelledError):
         await task
     await disconnect()
+    await vision.close()
+    await boxes.close()
 
 
 app = FastAPI(lifespan=lifespan)
+boxes = BoxService(lambda: (latest_jpeg, frame_at, camera_session), connected)
+vision = VisionService(lambda: (latest_jpeg, frame_at, camera_session), connected,
+                       box_status=boxes.status)
+app.include_router(vision.router)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=["127.0.0.1", "localhost"],
@@ -644,6 +668,13 @@ async def home():
     return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/vision", response_class=HTMLResponse)
+async def vision_page():
+    page = Path(__file__).with_name("vision.html").read_text()
+    return HTMLResponse(page.replace("__TOKEN__", TOKEN),
+                        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/status")
 async def status():
     return {
@@ -656,6 +687,7 @@ async def status():
         "stance": stance,
         "camera": bool(latest_jpeg) and time.monotonic() - frame_at < 2,
         "error": last_error,
+        "boxes": boxes.status(),
     }
 
 
@@ -682,6 +714,17 @@ async def camera(token: str = ""):
 
     return StreamingResponse(
         frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/camera.boxes.mjpeg")
+async def camera_boxes(token: str = ""):
+    if token != TOKEN:
+        raise HTTPException(403, "Unauthorized")
+    return StreamingResponse(
+        boxes.frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store"},
     )

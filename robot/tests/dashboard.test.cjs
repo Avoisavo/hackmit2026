@@ -26,7 +26,7 @@ function dashboard() {
     hasFocus: () => true,
     querySelector(selector) {
       if (!elements.has(selector)) elements.set(selector, {
-        textContent: '', classList: {toggle() {}},
+        textContent: '', checked: selector === '#controlBoxes', classList: {toggle() {}},
       });
       return elements.get(selector);
     },
@@ -55,6 +55,52 @@ function dashboard() {
   ui.blur = () => listeners.blur();
   return ui;
 }
+
+test('object boxes share the driving camera and toggling never changes movement', async () => {
+  const ui = dashboard();
+  await ui.run('arm()');
+  Object.assign(ui.state, {armed: true, camera: true, boxes: {
+    state: 'running', count: 2, fps: 8, frame_age_seconds: 0.1, error: '',
+  }});
+  await ui.poll();
+  assert.match(ui.run('cam.src'), /^\/camera.boxes.mjpeg\?token=/);
+  assert.match(ui.run('boxesStatus.textContent'), /2 detections/);
+  const requests = ui.requests.length;
+  ui.run('controlBoxes.checked = false; controlBoxes.onchange()');
+  assert.match(ui.run('cam.src'), /^\/camera.mjpeg\?token=/);
+  assert.equal(ui.run('enabled'), true);
+  assert.equal(ui.requests.length, requests);
+  ui.key('keydown', 'KeyW');
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 1);
+});
+
+test('detector failure falls back to raw video and can be retried without robot commands', async () => {
+  const ui = dashboard();
+  ui.state.boxes = {state: 'error', error: 'Model unavailable'};
+  await ui.poll();
+  assert.match(ui.run('cam.src'), /^\/camera.mjpeg\?token=/);
+  assert.match(ui.run('boxesStatus.textContent'), /Model unavailable.*Showing raw camera/);
+  ui.run('controlBoxes.checked = false; controlBoxes.onchange()');
+  ui.run('controlBoxes.checked = true; controlBoxes.onchange()');
+  assert.match(ui.run('cam.src'), /^\/camera.boxes.mjpeg\?token=/);
+  assert.deepEqual(ui.requests, ['/api/status']);
+});
+
+test('expired session stops the camera and a disconnected robot clears its stream', async () => {
+  const ui = dashboard();
+  await ui.poll();
+  ui.state.connected = false;
+  await ui.poll();
+  assert.equal(ui.run('cam.src'), '');
+  ui.state.connected = true;
+  await ui.poll();
+  ui.statusResponse = async () => ({ok: false, status: 403});
+  await ui.poll();
+  assert.equal(ui.run('cam.src'), '');
+  assert.equal(ui.run('camConnected'), false);
+  assert.match(ui.run('boxesStatus.textContent'), /Reload/);
+});
 
 test('trick recovers, enables the dashboard and drives with held WASD at 1.0', async () => {
   const ui = dashboard();

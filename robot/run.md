@@ -21,6 +21,17 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8010
 
 Then open http://127.0.0.1:8010 in a browser on this Mac.
 
+To select this copy explicitly from any terminal directory, use:
+
+```sh
+~/dimensional-applications/.venv/bin/python -m uvicorn app:app --app-dir ~/Developer/hackmit2026/robot --host 127.0.0.1 --port 8010
+```
+
+The updated controls include **Robot connection → Robot IP**, a **Show labeled
+object boxes** checkbox under the camera, and an **Open camera object recognition
+& counting** link. If any are missing, stop the old server and use the explicit
+command above, then reload the page.
+
 Enter the robot's latest discovered address in **Robot IP**, then click
 **Connect robot**. The address can change when the Wi-Fi network changes;
 you can update it in the dashboard without restarting the server. `ROBOT_IP`
@@ -131,3 +142,58 @@ stop is not a guarantee.
   Stand up, or ending the pose), waits 3 s, then continues.
 - **Disconnect** releases the WebRTC slot so dimOS or the phone app can
   reconnect.
+
+## Object detection and scene counting
+
+The vision components from `muthu` use the same built-in camera and WebRTC
+connection as these controls. WASD, direction buttons, full joystick input,
+postures, tricks, automatic recovery and STOP keep their existing behavior.
+Vision never sends motion commands or opens a second robot connection.
+
+**Live boxes:** leave **Show labeled object boxes** checked on the controls
+page to see local YOLO11s detections while driving. Labels include confidence;
+predictions below 50% are hidden. One background worker serves both pages.
+Uncheck the box for raw video. If the detector fails, the controls automatically
+show raw video with an error; toggle boxes off and on to retry. Old camera
+frames and observations are discarded on disconnect/reconnect.
+
+For a fresh environment, install the vision dependencies and download the model
+from the repository root:
+
+```sh
+uv pip install --python ~/dimensional-applications/.venv/bin/python -r robot/requirements-vision.txt
+mkdir -p robot/models
+curl --fail --location https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11s.pt --output robot/models/yolo11s.pt
+```
+
+The model has already been downloaded in this checkout. `GO2_DETECTOR_WEIGHTS`
+can point to a checkpoint elsewhere. Model weights and caches are ignored by Git.
+
+**Scene counting:** open **camera object recognition & counting** (`/vision`).
+Enter an OpenAI API key under **OpenAI connection**, or supply `OPENAI_API_KEY`
+when starting the server. The page keeps the key in server memory until shutdown;
+do not put it in source code. `OPENAI_VISION_MODEL` overrides `gpt-4.1-mini`.
+Live boxes work locally without an API key. Scene checks send two fresh camera
+images to OpenAI and display the inventory and selected-object count.
+
+Set an object description and goal from 1–20, then select **Check this scene**.
+Two clear agreeing views are required before grading an answer. **Start
+auto-check** runs up to 30 checks, with an 8-second pause between completed
+checks. Hiding/leaving the vision page stops sampling. Switching away from
+Controls disarms driving; return and press a fresh drive key to enable it again.
+
+The `/api/vision` endpoints use the same `X-Control-Token` as the existing APIs:
+`GET /status`, `POST /key`, `/round`, `/scan`, `/start`, `/stop` and `/answer`.
+Stopping vision sampling only stops scene analysis; the controls' STOP still
+disarms the robot. Live images are processed in memory and are not saved.
+
+## Offline checks
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 ~/dimensional-applications/.venv/bin/python -m unittest discover -s robot/tests
+node --test robot/tests/*.test.cjs
+```
+
+Tests use fake robot/camera/provider transports and do not move hardware or
+call OpenAI. They cover the existing controls plus detection, camera session
+invalidation, scene counting, authentication and the combined dashboard.

@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Python and local vision model files
+__pycache__/
+*.py[cod]
+/robot/models/
+
+/robot/__pycache__/
