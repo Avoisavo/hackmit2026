@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Go2 · Look & Count</title>
+<style>
+  :root {color-scheme: dark; --bg:#10141c;--panel:#192130;--line:#2c394e;--text:#edf2ff;--muted:#a9b8cd;--mint:#a5edcc;--blue:#b7d1ff;--warn:#ffd18b;}
+  * {box-sizing:border-box;}
+  body {margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+  main {max-width:1220px;margin:auto;padding:32px 28px 40px;}
+  header {display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:28px;}
+  .brand {display:flex;align-items:center;gap:14px;}
+  .brand-icon {width:48px;height:48px;display:grid;place-items:center;border:1px solid #476354;border-radius:15px;color:var(--mint);font-size:25px;background:#20382e;}
+  h1,h2,h3,p {margin:0;}h1{font-size:25px;letter-spacing:-.7px;line-height:1.3;}h2{font-size:17px;letter-spacing:-.25px;}h3{font-size:13px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);}
+  a {color:var(--blue);text-decoration:none;}a:hover{text-decoration:underline;}
+  .muted {color:var(--muted);}.small{font-size:12px;}.eyebrow{font-size:11px;font-weight:700;letter-spacing:1.8px;color:var(--mint);margin-bottom:5px;text-transform:uppercase;}
+  .panel {border:1px solid var(--line);background:var(--panel);border-radius:18px;overflow:hidden;}
+  .panel-body {padding:22px;}.panel-head {display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:16px;}
+  .layout {display:grid;grid-template-columns:minmax(0,1.22fr) minmax(0,1fr);gap:20px;align-items:start;}
+  .stack {display:grid;gap:20px;}.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid #38465c;background:#202c3c;border-radius:30px;padding:5px 10px;font-size:11px;white-space:nowrap;color:var(--muted);}
+  .pill[data-tone="good"] {color:var(--mint);border-color:#365b4b;background:#1b332b;}.pill[data-tone="warn"]{color:var(--warn);border-color:#624d30;background:#33291d;}
+  .camera-wrap{position:relative;aspect-ratio:16/10;background:#0b1018;overflow:hidden;display:grid;place-items:center;}
+  #camera{display:block;width:100%;height:100%;object-fit:contain;position:absolute;inset:0;}
+  .camera-wrap[data-stale="true"] #camera{opacity:.18;filter:grayscale(1);}
+  .camera-top{position:absolute;top:16px;left:16px;z-index:1;}.camera-top .pill{background:#111c26e8;}
+  .camera-placeholder{position:relative;z-index:1;text-align:center;padding:30px;max-width:380px;}
+  .camera-placeholder span{font-size:32px;display:block;margin-bottom:12px;color:#647890;}
+  .camera-placeholder strong{display:block;font-weight:600;margin-bottom:5px;}
+  .box-toggle{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;margin:0;padding:6px 10px;border:1px solid #416858;border-radius:30px;background:#1b342b;color:var(--mint);font-size:11px;cursor:pointer;}
+  .box-toggle input{width:14px;height:14px;margin:0;padding:0;accent-color:var(--mint);cursor:pointer;}
+  .box-status{font-size:12px;color:var(--mint);overflow-wrap:anywhere;margin-bottom:7px;}.box-status[data-tone="warn"]{color:var(--warn);}
+  .camera-caption{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:13px 20px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted);}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:17px;}
+  button,input{font:inherit;}button{border:1px solid #3a4c63;background:#26374d;color:var(--text);border-radius:9px;padding:11px 14px;cursor:pointer;transition:background .15s;}
+  button:hover:not(:disabled){background:#344b67;}button.primary{background:var(--mint);color:#142d23;border-color:var(--mint);font-weight:650;}button.primary:hover:not(:disabled){background:#c4f8e0;}button:disabled{opacity:.4;cursor:not-allowed;}
+  button.quiet{background:transparent;color:var(--muted);}button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible{outline:2px solid var(--mint);outline-offset:3px;}
+  input{min-width:0;width:100%;border:1px solid #41506a;border-radius:9px;padding:11px 12px;background:#101925;color:var(--text);}
+  input::placeholder{color:#8494aa;}label{display:block;font-size:12px;color:var(--muted);margin-bottom:7px;}
+  .form-row{display:grid;grid-template-columns:minmax(0,1fr) 90px;gap:12px;margin-top:18px;}.full{width:100%;margin-top:12px;}
+  .inventory{list-style:none;margin:0;padding:0;display:grid;gap:9px;}.inventory li{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:11px 13px;background:#111b28;border:1px solid #29394d;border-radius:10px;}
+  .inventory .count{color:var(--mint);font-weight:700;font-size:16px;font-variant-numeric:tabular-nums;min-width:28px;text-align:center;}
+  .inventory .empty{color:var(--muted);padding:16px 0;border:0;background:none;font-size:13px;}
+  .activity{background:linear-gradient(145deg,#213c35 0,#1c2c31 45%,#192130 100%);border-color:#39574e;}
+  .target-name{color:var(--mint);font-weight:650;overflow-wrap:anywhere;}
+  .counts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:20px 0 14px;}.count-box{border:1px solid #3a514e;border-radius:13px;padding:17px;background:#111e2380;}
+  .count-box .number{display:block;font-size:46px;font-weight:650;line-height:1.15;letter-spacing:-2px;font-variant-numeric:tabular-nums;}.count-box .caption{font-size:12px;color:#aec5c3;}
+  .count-box.goal .number{color:var(--mint);}.observation-status{font-size:12px;color:var(--muted);min-height:36px;}
+  .speech{font-size:18px;line-height:1.55;letter-spacing:-.2px;margin:18px 0 20px;}
+  .answer-row{display:grid;grid-template-columns:1fr auto;gap:9px;}.answer-row input{background:#111e26;}
+  .feedback-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-top:16px;margin-top:18px;border-top:1px solid #39524c;font-size:12px;}
+  details{padding:17px 21px;}summary{cursor:pointer;font-size:13px;color:var(--muted);}.key-content{padding-top:16px;}.key-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;}
+  .status-strip{margin:20px 0 0;padding:12px 16px;border:1px solid var(--line);border-radius:10px;background:#141d2a;min-height:47px;font-size:13px;color:var(--blue);overflow-wrap:anywhere;}
+  .status-strip[data-tone="error"]{color:#ffb8b8;border-color:#66444d;}.error{color:#ffb8b8;font-size:12px;overflow-wrap:anywhere;margin-top:8px;}
+  footer{display:flex;justify-content:space-between;gap:16px;margin-top:22px;font-size:12px;color:#8595aa;}.integration{margin-top:12px;padding:0;border:0;}.integration summary{font-size:11px;}.integration pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font:11px/1.5 ui-monospace,monospace;}
+  [hidden]{display:none!important;}
+  @media(max-width:800px){main{padding:22px 16px;}header{align-items:flex-start;}h1{font-size:22px;}.layout{grid-template-columns:1fr;}.panel-body{padding:19px;}.camera-wrap{aspect-ratio:16/9;}footer{flex-direction:column;gap:5px;}}
+  @media(prefers-reduced-motion:reduce){button{transition:none;}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand"><div class="brand-icon" aria-hidden="true">◎</div><div><p class="eyebrow">Go2 vision lab</p><h1>Look &amp; Count</h1><p class="muted small">A little observation. A little arithmetic.</p></div></div>
+    <a href="/controls" class="small">← Robot controls</a>
+  </header>
+  <div class="layout">
+    <div class="stack">
+      <section class="panel" aria-labelledby="cameraTitle">
+        <div class="camera-wrap" id="cameraWrap" data-stale="true">
+          <img id="camera" alt="View from the Go2 built-in camera" referrerpolicy="no-referrer">
+          <div class="camera-top"><span class="pill" id="cameraStatus">Checking camera…</span></div>
+          <div class="camera-placeholder" id="cameraPlaceholder"><span aria-hidden="true">◎</span><strong id="cameraMessage">Waiting for the robot camera</strong><p class="muted small" id="cameraHelp">Connect Go2 from Robot controls to see its view here.</p></div>
+        </div>
+        <div class="camera-caption"><span id="cameraTitle">Go2 · Built-in camera</span><label class="box-toggle" for="showBoxes"><input id="showBoxes" type="checkbox" checked><span>Object boxes</span></label></div>
+        <div class="panel-body">
+          <div class="panel-head"><h2>Look around</h2><span class="pill" id="scanStatus">Paused</span></div>
+          <p id="boxStatus" class="box-status" role="status">Loading object detector…</p>
+          <p class="muted small">Live boxes locate items; OpenAI names and counts the scene. Each scene check compares two fresh views.</p>
+          <div class="controls"><button class="primary" id="scan" disabled>Check this scene</button><button id="start" disabled>Start auto-check</button><button class="quiet" id="stop" disabled>Pause</button></div>
+          <p class="muted small" id="scanBudget" style="margin-top:12px">Up to 30 checks per batch · two image requests per check. 8s between completed checks.</p>
+          <p class="error" id="serviceError" role="status"></p>
+        </div>
+      </section>
+      <section class="panel panel-body" aria-labelledby="inventoryTitle">
+        <div class="panel-head"><h2 id="inventoryTitle">What’s in view</h2><span class="pill" id="inventoryStatus">No observation yet</span></div>
+        <ul class="inventory" id="inventory"><li class="empty">Check a scene to discover the objects in front of Go2.</li></ul>
+        <p class="muted small" style="margin-top:14px">The inventory describes individual item types; the activity counts only your chosen category. Camera estimates can be uncertain.</p>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel panel-body" aria-labelledby="roundTitle">
+        <p class="eyebrow">01 · Set a challenge</p><h2 id="roundTitle">What shall we count?</h2>
+        <form id="roundForm">
+          <div class="form-row"><div><label for="targetObject">Item or category</label><input id="targetObject" type="text" maxlength="80" required value="toy cars" placeholder="e.g. red toy cars" autocomplete="off"></div><div><label for="targetCount">Goal</label><input id="targetCount" type="number" min="1" max="20" step="1" required value="5" inputmode="numeric"></div></div>
+          <button id="newRound" class="full">Set counting goal</button>
+        </form>
+        <p class="muted small" style="margin-top:11px">Be specific: “red toy cars” or “blue blocks.” Place items apart, fully in view.</p>
+      </section>
+      <section class="panel panel-body activity" aria-labelledby="activityTitle">
+        <div class="panel-head"><div><p class="eyebrow">02 · Count together</p><h2 id="activityTitle">Counting <span class="target-name" id="targetLabel">toy cars</span></h2></div><span class="pill" id="lessonStatus">Ready to look</span></div>
+        <div class="counts"><div class="count-box"><span class="number" id="observedCount">—</span><span class="caption">I can see</span></div><div class="count-box goal"><span class="number" id="goalCount">5</span><span class="caption">Our goal</span></div></div>
+        <p id="observationStatus" class="observation-status">Check a fresh scene to begin.</p>
+        <p class="speech" id="speech">Let’s put our objects in view, then count together.</p>
+        <form id="answerForm"><label for="answer">How many more do we need?</label><div class="answer-row"><input id="answer" type="number" min="0" max="20" step="1" inputmode="numeric" required placeholder="Your answer" disabled><button id="checkAnswer" class="primary" disabled>Check answer</button></div><p id="answerUpdate" class="muted small" role="status" style="margin-top:8px"></p></form>
+        <div class="feedback-row"><span class="muted">Expression cue</span><span class="pill" id="expression">waiting</span></div>
+        <details class="integration"><summary>Voice &amp; expression handoff</summary><p class="muted small" style="margin-top:9px">Suggested speech and expression events are available for ZW / HB. This page does not play voice or move Go2.</p><pre id="handoff">No event yet.</pre></details>
+      </section>
+      <details class="panel" id="keySettings"><summary>OpenAI connection · <span id="keyStatus">Checking…</span></summary><div class="key-content"><p class="muted small" style="margin-bottom:14px">Scene checks send camera images to OpenAI. The key stays in server memory for this session and is cleared from this field after submission.</p><form id="keyForm"><label for="apiKey">OpenAI API key</label><div class="key-row"><input id="apiKey" type="password" autocomplete="off" spellcheck="false" required placeholder="sk-…"><button id="saveKey">Use key</button></div></form><p class="muted small" id="model" style="margin-top:10px"></p></div></details>
+    </div>
+  </div>
+  <p class="status-strip" id="actionStatus" role="status" aria-live="polite">Connect the camera, choose a goal, then check the scene.</p>
+  <footer><span>Auto-check pauses when you leave or hide this page.</span><span>Switching away from Robot controls disarms driving.</span></footer>
+</main>
+<script>
+'use strict';
+const token = "__TOKEN__";
+const $ = selector => document.querySelector(selector);
+const headers = {'X-Control-Token': token, 'Content-Type': 'application/json'};
+let state = null;
+let statusReceivedAt = 0;
+let actionEpoch = 0;
+let pollPending = false;
+let pendingAction = '';
+let inputsInitialized = false;
+let networkHealthy = false;
+let streamFailed = false;
+let cameraRetryAfter = 0;
+let leaving = false;
+let lifecycleGeneration = 0;
+
+function note(message, error = false) {
+  $('#actionStatus').textContent = message;
+  $('#actionStatus').dataset.tone = error ? 'error' : 'normal';
+}
+function ageSeconds() {
+  if (!state || !Number.isFinite(state.observation_age_seconds)) return null;
+  return state.observation_age_seconds + (Date.now() - statusReceivedAt) / 1000;
+}
+function freshObservation() {
+  const age = ageSeconds();
+  return networkHealthy && state?.connected && state?.camera_fresh && state?.observation_fresh !== false &&
+    age !== null && age <= 20 && state?.observation?.stable === true && state?.observation?.scene_clear === true &&
+    Number.isInteger(state?.observation?.observed_count);
+}
+function renderCamera() {
+  const camera = $('#camera');
+  const wantsBoxes = $('#showBoxes').checked;
+  const boxes = state?.boxes;
+  const rawFresh = networkHealthy && state?.connected && state?.camera_fresh;
+  const boxesFresh = boxes?.state === 'running' && Number.isFinite(boxes.frame_age_seconds) && boxes.frame_age_seconds <= 3;
+  const boxesError = boxes?.state === 'error';
+  const boxesLoading = !boxes || boxes.state === 'idle' || boxes.state === 'loading' || (boxes.state === 'running' && boxes.frame_age_seconds === null);
+  const fresh = rawFresh && !streamFailed && (!wantsBoxes || boxesFresh);
+  const source = wantsBoxes ? '/camera.boxes.mjpeg' : '/camera.mjpeg';
+  $('#boxStatus').textContent = !wantsBoxes ? 'Object boxes off · showing the original camera view.' : boxesError ?
+    'Object detector unavailable: ' + String(boxes.error || 'Try the original camera view.') : boxesLoading ? 'Loading object detector…' :
+    boxesFresh ? `${boxes.count ?? 0} objects located · ${Number.isFinite(boxes.fps) ? boxes.fps.toFixed(1) : '—'} detections/s` : 'Waiting for fresh object boxes…';
+  $('#boxStatus').dataset.tone = wantsBoxes && (boxesError || !boxesFresh) ? 'warn' : 'good';
+  $('#cameraStatus').textContent = !networkHealthy ? 'Camera unverified' : !state?.connected ? 'Robot offline' : !state?.camera_fresh ? 'Camera stale' :
+    wantsBoxes && boxesError ? 'Detector unavailable' : wantsBoxes && boxesLoading ? 'Loading boxes…' :
+    wantsBoxes && !boxesFresh ? 'Object boxes stale' : streamFailed ? 'Camera unverified' : wantsBoxes ? 'Live object boxes' : 'Live camera';
+  $('#cameraStatus').dataset.tone = fresh ? 'good' : 'warn';
+  $('#cameraWrap').dataset.stale = String(!fresh);
+  $('#cameraPlaceholder').hidden = fresh;
+  $('#cameraMessage').textContent = !networkHealthy ? 'Camera connection unverified' : !state?.connected ? 'Waiting for the robot camera' :
+    rawFresh && wantsBoxes && boxesError ? 'Object detector unavailable' : rawFresh && wantsBoxes && boxesLoading ? 'Loading object detector…' :
+    rawFresh && wantsBoxes && !boxesFresh ? 'Waiting for fresh object boxes' : 'Waiting for a fresh camera frame';
+  $('#cameraHelp').textContent = !state?.connected ? 'Connect Go2 from Robot controls to see its view here.' :
+    wantsBoxes && boxesError ? 'Turn off Object boxes to view the original live camera.' : wantsBoxes && boxesLoading && rawFresh ?
+    'Preparing the first detection. You can turn off Object boxes to see the original camera meanwhile.' : 'Fresh frames are needed before Go2 can count again.';
+  if (networkHealthy && state?.connected && (!camera.src || camera.dataset.stream !== source || (streamFailed && Date.now() >= cameraRetryAfter))) {
+    if (camera.dataset.stream !== source) streamFailed = false;
+    camera.dataset.stream = source;
+    cameraRetryAfter = Date.now() + 5000;
+    camera.src = source + '?token=' + encodeURIComponent(token) + (streamFailed ? '&retry=' + Date.now() : '');
+  }
+  if (!state?.connected && camera.src) camera.removeAttribute('src');
+}
+function renderActivity() {
+  const fresh = freshObservation();
+  const observation = state?.observation;
+  const age = ageSeconds();
+  $('#targetLabel').textContent = state?.target_object || 'your objects';
+  $('#goalCount').textContent = Number.isInteger(state?.target_count) ? String(state.target_count) : '—';
+  $('#observedCount').textContent = fresh ? String(observation.observed_count) : '—';
+  $('#observationStatus').textContent = !observation ? 'Check a fresh scene to begin.' :
+    !networkHealthy || !state.connected ? 'Camera offline or unverified. Check again after reconnecting.' :
+    !state.camera_fresh || state.observation_fresh === false || age === null || age > 20 ? 'This count needs a fresh check before answering.' :
+    !fresh ? 'Scene uncertain. ' + String(observation.reason || 'Keep objects still and clearly separated.') :
+    `Two views agree · checked ${Math.floor(age)}s ago`;
+  const event = state?.last_event;
+  const lesson = state?.lesson;
+  const lessonNames = {need_more:'Add a few more',too_many:'A few too many',complete:'Goal reached',uncertain:'Let’s look again'};
+  $('#lessonStatus').textContent = fresh ? (lessonNames[lesson?.status] || 'Ready to count') : 'Ready to look';
+  $('#lessonStatus').dataset.tone = fresh && lesson?.status === 'complete' ? 'good' : 'normal';
+  $('#speech').textContent = fresh ? String(event?.suggested_speech || lesson?.suggested_speech || 'How many more do we need?') :
+    observation ? 'Let’s get a clear, fresh view and count again together.' : 'Let’s put our objects in view, then count together.';
+  $('#expression').textContent = fresh ? String(event?.event || (lesson?.status === 'complete' ? 'happy' : 'waiting')) : 'waiting';
+  $('#expression').dataset.tone = fresh && (event?.event === 'happy' || lesson?.status === 'complete') ? 'good' : 'normal';
+  $('#handoff').textContent = event ? JSON.stringify(event,null,2) : lesson ? JSON.stringify(lesson,null,2) : 'No event yet.';
+  $('#answer').disabled = !fresh || Boolean(pendingAction) || Boolean(state?.busy);
+  $('#checkAnswer').disabled = $('#answer').disabled;
+}
+function renderControls() {
+  const ready = networkHealthy && state?.configured && state?.connected && state?.camera_fresh;
+  $('#scan').disabled = !ready || Boolean(pendingAction) || Boolean(state?.busy) || Boolean(state?.running) || document.hidden;
+  $('#start').disabled = !ready || Boolean(pendingAction) || Boolean(state?.busy) || Boolean(state?.running) || document.hidden;
+  $('#stop').disabled = !(state?.running || state?.busy || pendingAction === 'start' || pendingAction === 'scan');
+  $('#newRound').disabled = Boolean(pendingAction) || Boolean(state?.busy);
+  $('#saveKey').disabled = Boolean(pendingAction);
+  $('#scanStatus').textContent = state?.busy ? 'Looking…' : state?.running ? 'Auto-check on' : 'Paused';
+  $('#scanStatus').dataset.tone = state?.running ? 'good' : 'normal';
+  $('#scanBudget').textContent = state?.running
+    ? `${state.scans_remaining ?? 0} checks remaining · two image requests per check. ${state.interval_seconds || 8}s between completed checks.`
+    : `Up to 30 checks per batch · two image requests per check. ${state?.interval_seconds || 8}s between completed checks.`;
+  $('#keyStatus').textContent = state?.configured ? 'Key configured' : 'Key needed';
+  $('#model').textContent = state?.model ? `Vision model: ${state.model}` : '';
+  $('#serviceError').textContent = state?.error ? String(state.error) : '';
+}
+function renderInventory() {
+  const items = Array.isArray(state?.observation?.objects) ? state.observation.objects : [];
+  $('#inventory').replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement('li');empty.className = 'empty';
+    empty.textContent = state?.observation ? 'No identifiable items in the last check.' : 'Check a scene to discover the objects in front of Go2.';
+    $('#inventory').append(empty);
+  }
+  for (const item of items) {
+    const row = document.createElement('li');const label = document.createElement('span');const count = document.createElement('span');
+    label.textContent = String(item.label);count.textContent = String(item.count);count.className = 'count';row.append(label,count);$('#inventory').append(row);
+  }
+  $('#inventoryStatus').textContent = !state?.observation ? 'No observation yet' : freshObservation() ? 'Latest check' : 'Last check · unverified';
+}
+function render() {
+  renderCamera();renderActivity();renderControls();renderInventory();
+}
+function acceptStatus(body, syncInputs = false) {
+  if (state && (body.round_id !== state.round_id || body.observation_id !== state.observation_id)) {
+    if ($('#answer').value) $('#answerUpdate').textContent = 'Scene changed. Answer the current question.';
+    $('#answer').value = '';
+  }
+  state = body;statusReceivedAt = Date.now();networkHealthy = true;
+  if (!inputsInitialized || syncInputs) {
+    $('#targetObject').value = body.target_object || 'toy cars';
+    $('#targetCount').value = String(body.target_count || 5);inputsInitialized = true;
+  }
+  render();
+}
+async function request(path, payload) {
+  const response = await fetch('/api/vision/' + path, {method:payload === undefined ? 'GET':'POST',headers,
+    ...(payload === undefined ? {} : {body:JSON.stringify(payload)}),cache:'no-store',signal:AbortSignal.timeout(path === 'status' ? 10000 : 90000)});
+  const body = await response.json();
+  if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'The request could not be completed.');
+  return body;
+}
+async function poll() {
+  if (document.hidden || leaving || pollPending || pendingAction) return;
+  pollPending = true;const epoch = actionEpoch;
+  try {const body = await request('status');if (epoch === actionEpoch) acceptStatus(body);}
+  catch (_) {if (epoch === actionEpoch) {networkHealthy = false;render();}}
+  finally {pollPending = false;}
+}
+async function act(path, payload = {}, message = 'Done.') {
+  if (document.hidden || leaving || (pendingAction && path !== 'stop')) return;
+  const epoch = ++actionEpoch;const generation = lifecycleGeneration;pendingAction = path;render();note(path === 'scan' ? 'Comparing two fresh camera views…' : 'Working…');
+  try {
+    const body = await request(path,payload);
+    if (epoch !== actionEpoch) return;
+    acceptStatus(body,path === 'round');
+    if (path === 'round' || path === 'answer') {$('#answer').value = '';$('#answerUpdate').textContent = '';}
+    note(message);
+  } catch (error) {
+    if (epoch === actionEpoch) note(path === 'key' ? 'Could not configure the API key. Check the key and server connection, then try again.' : error.message,true);
+  } finally {
+    if (epoch === actionEpoch) {pendingAction = '';render();}
+    if ((document.hidden || leaving || generation !== lifecycleGeneration) && (path === 'start' || path === 'scan')) stopForLifecycle();
+  }
+}
+function integerInput(selector,minimum,maximum) {
+  const raw = $(selector).value.trim();const value = Number(raw);
+  return raw !== '' && Number.isInteger(value) && value >= minimum && value <= maximum ? value : null;
+}
+$('#keyForm').addEventListener('submit',event => {
+  event.preventDefault();const apiKey = $('#apiKey').value.trim();$('#apiKey').value = '';
+  if (!apiKey) {note('Enter an OpenAI API key first.',true);return;}
+  act('key',{api_key:apiKey},'API key configured for this server session.');
+});
+$('#roundForm').addEventListener('submit',event => {
+  event.preventDefault();const target = $('#targetObject').value.trim();const count = integerInput('#targetCount',1,20);
+  if (!target || target.length > 80 || count === null) {note('Choose an item name and a whole-number goal from 1 to 20.',true);return;}
+  act('round',{target_object:target,target_count:count},'Counting goal set. Check a fresh scene to begin.');
+});
+$('#answerForm').addEventListener('submit',event => {
+  event.preventDefault();const answer = integerInput('#answer',0,20);
+  if (!freshObservation()) {note('Check a fresh, clear scene before answering.',true);return;}
+  if (answer === null) {note('Enter a whole-number answer from 0 to 20.',true);return;}
+  act('answer',{answer,round_id:state.round_id,observation_id:state.observation_id},'Answer checked. See Go2’s response above.');
+});
+$('#scan').addEventListener('click',() => act('scan',{},'Scene checked. Review the objects and count above.'));
+$('#start').addEventListener('click',() => act('start',{},'Auto-check started. Keep objects still while Go2 looks.'));
+$('#stop').addEventListener('click',() => act('stop',{},'Auto-check paused.'));
+$('#showBoxes').addEventListener('change',() => {streamFailed = false;renderCamera();});
+$('#camera').addEventListener('error',() => {streamFailed = true;cameraRetryAfter = Date.now() + 5000;renderCamera();});
+$('#camera').addEventListener('load',() => {streamFailed = false;renderCamera();});
+function stopForLifecycle() {
+  ++actionEpoch;++lifecycleGeneration;pendingAction = '';
+  fetch('/api/vision/stop',{method:'POST',headers,body:'{}',keepalive:true}).catch(() => {});
+  if (state) state.running = false;
+  networkHealthy = false;render();
+}
+window.addEventListener('pagehide',() => {leaving = true;stopForLifecycle();});
+window.addEventListener('pageshow',() => {leaving = false;poll();});
+document.addEventListener('visibilitychange',() => {
+  if (document.hidden) stopForLifecycle();
+  else {note('Auto-check paused while this page was hidden. Start it again when ready.');poll();}
+});
+setInterval(() => {renderActivity();poll();},1000);
+poll();
+</script>
+</body>
+</html>

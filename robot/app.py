@@ -1,0 +1,1316 @@
+import asyncio
+import contextlib
+import html
+import io
+import json
+import logging
+import math
+import os
+import secrets
+import time
+from contextlib import asynccontextmanager
+from itertools import count
+from ipaddress import IPv4Address
+from pathlib import Path
+
+import requests
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, RedirectResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel
+from unitree_webrtc_connect import unitree_auth
+from unitree_webrtc_connect.webrtc_driver import (
+    UnitreeWebRTCConnection,
+    WebRTCConnectionMethod,
+)
+from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
+
+if __package__:
+    from .demo_motion import HeadingTracker, half_turn
+    from .face_bridge import FaceBridge
+    from .demo_observer import DemoObserver
+    from .local_settings import ENV_FILE, read_settings
+    from .control_plane import ROLES
+    from .hare_plane import HareControlPlane as ControlPlane
+    from .go2_speaker import Go2Speaker
+    from .ai_agent import CameraAgent, AgentError, validate_call, TOOLS, TRICKS
+    from .box_service import BoxService
+    from .connection_health import ConnectionSupervisor, guard_heartbeat
+    from .vision_service import VisionService
+else:
+    from demo_motion import HeadingTracker, half_turn
+    from face_bridge import FaceBridge
+    from demo_observer import DemoObserver
+    from local_settings import ENV_FILE, read_settings
+    from control_plane import ROLES
+    from hare_plane import HareControlPlane as ControlPlane
+    from go2_speaker import Go2Speaker
+    from ai_agent import CameraAgent, AgentError, validate_call, TOOLS, TRICKS
+    from box_service import BoxService
+    from connection_health import ConnectionSupervisor, guard_heartbeat
+    from vision_service import VisionService
+
+
+# The library runs the LAN signaling handshake with blocking sockets on the
+# event loop and issues its HTTP requests without a timeout. Left as is, a
+# robot that accepts TCP but never answers freezes the watchdog, STOP and
+# the 40 s connect guard for the whole process. Bound the requests and run
+# the handshake in a worker thread instead.
+def _bounded_local_request(path, body=None, headers=None):
+    try:
+        response = requests.post(
+            url=path, data=body, headers=headers, timeout=(3, 10)
+        )
+        response.raise_for_status()
+        return response if response.status_code == 200 else None
+    except requests.exceptions.RequestException as exc:
+        print(f"Local signaling request failed: {exc}")
+        return None
+
+
+unitree_auth.make_local_request = _bounded_local_request
+logger = logging.getLogger(__name__)
+
+
+class Go2Connection(UnitreeWebRTCConnection):
+    async def connect(self):
+        await super().connect()
+        guard_heartbeat(self.datachannel.heartbeat)
+
+    async def get_answer_from_local_peer(self, pc, ip):
+        offer = pc.localDescription
+        payload = json.dumps(
+            {
+                "id": "STA_localNetwork"
+                if self.connectionMethod == WebRTCConnectionMethod.LocalSTA
+                else "",
+                "sdp": offer.sdp,
+                "type": offer.type,
+                "token": self.token,
+            }
+        )
+        return await asyncio.to_thread(
+            unitree_auth.send_sdp_to_local_peer,
+            ip,
+            payload,
+            aes_128_key=self.aes_128_key,
+        )
+
+
+LOCAL_SETTINGS = read_settings()
+heading = HeadingTracker()
+ROBOT_IP = LOCAL_SETTINGS.get("ROBOT_IP", "10.254.159.2")
+TOKEN = secrets.token_urlsafe(32)
+CAMERA_WIDTH = 960
+CAMERA_FPS = 15
+SETTLE = 3.0  # seconds a posture change gets before the next command (dimOS uses 3)
+SPORT_REPLY_TIMEOUT = 10
+TRICK_REPLY_GRACE = 5
+request_ids = count(secrets.randbelow(1 << 30) + 1)
+
+# Posture buttons. These api_ids are identical in both motion modes.
+POSTURES = {"stand": "StandUp", "balance": "BalanceStand", "lie": "StandDown"}
+
+# Tricks: name -> (SPORT_CMD key in "normal" mode, SPORT_CMD_MCF key in ai/mcf
+# mode, takes an on/off flag). Flagged commands are poses the robot holds
+# until sent {"data": false}; the others are one-shot. Flag convention from
+# unitree_sdk2's SportClient (HandStand/WalkUpright/Pose send {"data": flag})
+# and dimOS (Standup 1050 with {"data": True}). None: no such move in that mode.
+ACTIONS = {
+    "hello": ("Hello", "Hello", False),
+    "stretch": ("Stretch", "Stretch", False),
+    "sit": ("Sit", "Sit", False),
+    "rise_sit": ("RiseSit", "RiseSit", False),
+    "heart": ("FingerHeart", "Heart", False),
+    "content": ("Content", "Content", False),
+    "scrape": ("Scrape", "Scrape", False),
+    "wiggle_hips": ("WiggleHips", None, False),
+    "dance1": ("Dance1", "Dance1", False),
+    "dance2": ("Dance2", "Dance2", False),
+    "hind_stand": ("Standup", "BackStand", True),
+    "handstand": ("Handstand", "HandStand", True),
+    "front_jump": ("FrontJump", "FrontJump", False),
+    "front_pounce": ("FrontPounce", "FrontPounce", False),
+    "front_flip": ("FrontFlip", "FrontFlip", False),
+    "back_flip": ("BackFlip", "BackFlip", False),
+    "left_flip": ("LeftFlip", "LeftFlip", False),
+    "right_flip": ("RightFlip", None, False),
+    "recovery": ("RecoveryStand", "RecoveryStand", False),
+    "damp": ("Damp", "Damp", False),
+}
+MOTION_MODES = ("normal", "ai", "mcf")
+
+# What the robot is left in after an accepted command. Everything else
+# (tricks, flips, dances) ends standing. Held poses are handled separately.
+STANCE_AFTER = {
+    "StandUp": "standing",
+    "RecoveryStand": "standing",
+    "RiseSit": "after_trick",   # walkable only after RecoveryStand, like a trick
+    "BalanceStand": "balanced",
+    "StandDown": "lying",
+    "Sit": "sitting",
+    "Damp": "damped",
+}
+HELD_POSES = {"Standup": "hind_stand", "BackStand": "hind_stand",
+              "Handstand": "handstand", "HandStand": "handstand"}
+
+# How to get back to standing from a stance the robot cannot act from:
+# (command name, on flag). Runs automatically before any other command.
+# After a one-shot trick the controller is left in a locked stand where the
+# joystick only tilts the body; RecoveryStand puts it back into a stand the
+# joystick can walk from (observed on this robot).
+RECOVERY = {
+    "sitting": ("rise_sit", True),
+    "lying": ("stand", True),
+    "damped": ("stand", True),
+    "unknown": ("stand", True),
+    "after_trick": ("recovery", True),
+    "hind_stand": ("hind_stand", False),
+    "handstand": ("handstand", False),
+}
+# Commands that skip the usual pose-exit sequence (RiseSit / StandUp / end
+# a held pose). run_command still requires RecoveryStand before the action.
+DIRECT = {"rise_sit", "recovery", "damp"}
+
+# Every trick ends with an automatic RecoveryStand once it has had this many
+# seconds to finish, followed by BalanceStand and enabling movement.
+# Held poses are held this long, then ended, then recovered. Sit and
+# Damp leave through their own exit (RiseSit / StandUp) before RecoveryStand.
+AUTO_RECOVER_AFTER = {
+    "hello": 5, "stretch": 8, "heart": 5, "content": 5, "scrape": 5,
+    "wiggle_hips": 6, "dance1": 15, "dance2": 20,
+    "front_jump": 4, "front_pounce": 4,
+    "front_flip": 5, "back_flip": 5, "left_flip": 5, "right_flip": 5,
+    "sit": 5, "rise_sit": 3, "damp": 4,
+    "hind_stand": 6, "handstand": 6,
+}
+ARM_WAIT = 60  # includes the trick, recovery pauses and robot replies
+
+# Status codes the robot puts in reply.data.header.status.code
+# (unitree_sdk2py rpc/internal.py and go2/sport/sport_api.py).
+STATUS_TEXT = {
+    0: "ok",
+    3001: "unknown error",
+    3102: "client send error",
+    3103: "API not registered",
+    3104: "request timed out inside the robot",
+    3105: "response mismatch",
+    3106: "client data error",
+    3107: "lease invalid",
+    3201: "server send error",
+    3202: "robot refused (internal error: usually not allowed from the "
+          "current posture, gait or mode)",
+    3203: "not implemented by the active motion controller (try the other "
+          "motion mode)",
+    3204: "invalid parameters for this command",
+    3205: "lease denied",
+    3206: "lease does not exist",
+    3207: "lease already exists",
+    4201: "sport service timed out",
+    4202: "sport service not initialised",
+}
+
+robot = None
+armed = False
+stance = "unknown"  # see STANCE_AFTER / RECOVERY
+recovery_needed = True  # recover once before driving; posture/actions invalidate it
+last_input = 0.0
+desired = (0.0, 0.0, 0.0)
+controller = None
+controller_id = ""
+busy = False
+last_error = ""
+last_stop_reason = ""
+motion_mode = ""
+latest_jpeg = b""
+frame_at = 0.0
+camera_session = 0
+action_lock = asyncio.Lock()
+recovery_task = None  # scheduled automatic recovery after a trick
+command_seq = 0       # bumps on every accepted sport reply
+stop_epoch = 0        # prevents an interrupted operation from enabling movement
+
+
+class ConnectOptions(BaseModel):
+    ip: IPv4Address
+
+
+def same_origin(ws: WebSocket) -> bool:
+    # The dashboard may run on any local port; the socket must come from the
+    # page this server served (TrustedHostMiddleware already pins the host).
+    host = ws.headers.get("host", "")
+    scheme = "https" if ws.scope.get("scheme") == "wss" else "http"
+    return bool(host) and ws.headers.get("origin") == f"{scheme}://{host}"
+
+
+def connected():
+    try:
+        # data_channel_opened flips only after the robot's validation
+        # handshake; aiortc's readyState goes "open" earlier than that.
+        return (
+            robot is not None
+            and robot.pc.connectionState == "connected"
+            and robot.datachannel.data_channel_opened
+            and robot.datachannel.pub_sub.channel.readyState == "open"
+        )
+    except AttributeError:
+        return False
+
+
+def transport_state():
+    pc = getattr(robot, "pc", None)
+    channel = getattr(getattr(robot, "datachannel", None), "channel", None)
+    return {
+        "peer": getattr(pc, "connectionState", "closed"),
+        "ice": getattr(pc, "iceConnectionState", "closed"),
+        "data_channel": getattr(channel, "readyState", "closed"),
+    }
+
+
+def record_send_error(exc):
+    global last_error
+    message = f"Robot command send failed: {type(exc).__name__}"
+    if last_error != message:
+        logger.warning(message, exc_info=True)
+    last_error = message
+
+
+def send_velocity(forward=0.0, left=0.0, turn=0.0):
+    # Matches dimOS's WebRTC joystick mapping.
+    # These are joystick inputs, NOT calibrated metres/second.
+    if connected():
+        robot.datachannel.pub_sub.publish_without_callback(
+            RTC_TOPIC["WIRELESS_CONTROLLER"],
+            data={"lx": -left, "ly": forward, "rx": -turn, "ry": 0},
+        )
+
+
+def disarm():
+    global armed, desired
+    armed = False
+    desired = (0.0, 0.0, 0.0)
+    try:
+        send_velocity()
+    except Exception as exc:
+        # A closing data channel can throw even after connected() succeeded.
+        # Do not let a failed zero send kill the watchdog or abort disconnect.
+        record_send_error(exc)
+
+
+def stop(reason="", *, cancel_ai=True):
+    global stop_epoch, last_stop_reason
+    stop_epoch += 1
+    if reason:
+        last_stop_reason = reason
+    if cancel_ai:
+        ai.cancel(reason or "Manual control interrupted AI")
+        plane.cancel(reason or "Manual control interrupted the activity")
+    cancel_scheduled_recovery()
+    disarm()
+
+
+def check_not_stopped(epoch):
+    if epoch != stop_epoch or not connected():
+        raise HTTPException(409, "Operation stopped; movement remains disabled")
+
+
+def recovering():
+    return recovery_task is not None and not recovery_task.done()
+
+
+async def watchdog():
+    while True:
+        try:
+            # Missing browser heartbeats disarm movement.
+            if not connected():
+                # Offline microphone checks do not need a robot connection.
+                if armed or recovering() or ai.running or plane.requires_robot or speaker.playing:
+                    stop("Robot link unavailable")
+            elif (armed or recovering() or ai.running or plane.running) and time.monotonic() - last_input > 0.3:
+                stop("Dashboard heartbeat missed; movement stopped")
+            elif (ai.running or plane.requires_camera) and (not latest_jpeg or time.monotonic() - frame_at >= 2):
+                stop("Camera became stale; AI stopped")
+            else:
+                send_velocity(*(desired if armed else (0, 0, 0)))
+        except Exception as exc:
+            record_send_error(exc)
+            stop("Robot command transport failed; movement stopped")
+        await asyncio.sleep(0.05)
+
+
+async def disconnect():
+    global robot, motion_mode, latest_jpeg, frame_at, camera_session, stance, recovery_needed
+    heading.reset()
+    cancel_scheduled_recovery()
+    stop()
+    camera_session += 1
+    vision.invalidate_camera()
+    boxes.invalidate_camera()
+    speaker.detach()
+    old, robot = robot, None
+    motion_mode = ""
+    latest_jpeg = b""
+    frame_at = 0.0
+    stance = "unknown"
+    recovery_needed = True
+    if old:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(old.disconnect(), timeout=5)
+
+
+async def request(topic, options, timeout=5):
+    # SDK 2.2.0 leaves cancelled futures in its reply registry. A late reply
+    # then calls set_result() on a cancelled future and raises InvalidStateError.
+    # Keep the SDK task alive until we remove our uniquely identified callback;
+    # only then cancel it. This also handles STOP cancelling a recovery request.
+    pub_sub = robot.datachannel.pub_sub
+    resolver = pub_sub.future_resolver
+    request_id = next(request_ids)
+    pending = asyncio.create_task(
+        pub_sub.publish_request_new(topic, {**options, "id": request_id})
+    )
+    try:
+        return await asyncio.wait_for(asyncio.shield(pending), timeout=timeout)
+    finally:
+        resolver.pending_callbacks.pop(request_id, None)
+        resolver.chunk_data_storage.pop(request_id, None)
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+
+
+def reply_status(reply):
+    try:
+        return reply["data"]["header"]["status"]["code"]
+    except (KeyError, TypeError):
+        return None
+
+
+def status_text(code):
+    if code is None:
+        return "no status code in reply"
+    return STATUS_TEXT.get(code, f"unknown status {code}")
+
+
+async def check_mode():
+    # Motion switcher api 1001 = CheckMode; reply carries {"name": <mode>}.
+    global motion_mode
+    try:
+        reply = await request(RTC_TOPIC["MOTION_SWITCHER"], {"api_id": 1001})
+        motion_mode = json.loads(reply["data"]["data"]).get("name") or ""
+    except Exception as exc:
+        motion_mode = ""
+        print(f"Motion mode check failed: {exc}")
+    return motion_mode
+
+
+def resolve(name, on=True):
+    """Map a posture/action name to (api_id, key, parameter) for the
+    active motion mode. Raises 404/409 like the endpoints used to."""
+    if name in POSTURES:
+        key = POSTURES[name]
+        return SPORT_CMD[key], key, None
+    if name not in ACTIONS:
+        raise HTTPException(404, "Unknown action")
+    normal_key, mcf_key, flag = ACTIONS[name]
+    if motion_mode in ("", "normal"):
+        key, table = normal_key, SPORT_CMD
+    else:
+        key, table = mcf_key, SPORT_CMD_MCF
+    if key is None or key not in table:
+        other = "normal" if motion_mode not in ("", "normal") else "ai"
+        raise HTTPException(
+            409,
+            f"{name} is not in the {motion_mode or 'normal'} command table. "
+            f"Lie the robot down and click 'Switch to {other.capitalize()}' "
+            "to use it.",
+        )
+    return table[key], key, ({"data": on} if flag else None)
+
+
+def note_stance(key, parameter, code):
+    global stance, command_seq, recovery_needed
+    if code != 0:
+        return
+    command_seq += 1
+    if key in HELD_POSES:
+        on = bool(parameter and parameter.get("data"))
+        stance = HELD_POSES[key] if on else "after_trick"
+    else:
+        stance = STANCE_AFTER.get(key, "after_trick")
+    if key == "RecoveryStand":
+        recovery_needed = False
+    elif key != "BalanceStand":
+        # A posture or trick changes the recovered stance. Plain joystick
+        # input and STOP do not: repeated drive keys can reuse the recovery.
+        recovery_needed = True
+
+
+def cancel_scheduled_recovery():
+    global recovery_task
+    if recovery_task and not recovery_task.done():
+        recovery_task.cancel()
+    recovery_task = None
+
+
+def schedule_recovery(delay):
+    global recovery_task
+    cancel_scheduled_recovery()
+    recovery_task = asyncio.create_task(
+        auto_recover(delay, command_seq, stop_epoch, controller)
+    )
+
+
+async def auto_recover(delay, seq, epoch, owner):
+    # Fires once a trick has had time to finish: leaves the pose the robot is
+    # in (RiseSit / StandUp / end a held pose) and always ends with
+    # RecoveryStand, BalanceStand, then movement enabled. A stop or newer
+    # command cancels the sequence; only the original live dashboard can drive.
+    global busy, last_error, armed
+    await asyncio.sleep(delay)
+    if (seq != command_seq or epoch != stop_epoch or not connected()
+            or action_lock.locked()):
+        return
+    async with action_lock:
+        busy = True
+        disarm()
+        try:
+            steps = await recover_to_standing("automatic recovery", epoch)
+            if not any(s["command"].startswith("RecoveryStand") for s in steps):
+                await recovery_stand("automatic recovery", epoch)
+            check_not_stopped(epoch)
+            await prepare_stance(epoch)
+            check_not_stopped(epoch)
+            if (owner is not None and controller is owner
+                    and time.monotonic() - last_input <= 0.3):
+                armed = True
+        except HTTPException as exc:
+            last_error = str(exc.detail)
+        finally:
+            busy = False
+
+
+async def send_sport(key, api_id, parameter, label, timeout=None):
+    """One SPORT_MOD request. Caller holds action_lock. Returns the result
+    dict; raises 504 on no reply."""
+    global last_error, stance, recovery_needed
+    if timeout is None:
+        timeout = SPORT_REPLY_TIMEOUT
+    options = {"api_id": api_id}
+    if parameter is not None:
+        options["parameter"] = parameter
+    try:
+        reply = await request(RTC_TOPIC["SPORT_MOD"], options, timeout=timeout)
+    except asyncio.TimeoutError:
+        # Keep the session so the operator can still send Lie down / STOP.
+        # The robot may or may not have moved, so forget what we knew.
+        stance = "unknown"
+        recovery_needed = True
+        last_error = (
+            f"{label}: no reply within {timeout:g}s. Movement stays disabled. "
+            "Once the robot has finished, press a drive key or Enable movement "
+            "to recover; the trick will not be repeated."
+        )
+        raise HTTPException(504, last_error)
+    except asyncio.CancelledError:
+        stance = "unknown"
+        recovery_needed = True
+        raise
+    code = reply_status(reply)
+    if code is None:
+        stance = "unknown"
+        recovery_needed = True
+    note_stance(key, parameter, code)
+    return {
+        "command": label,
+        "api_id": api_id,
+        "parameter": parameter,
+        "status_code": code,
+        "status_text": status_text(code),
+        "reply": reply,
+    }
+
+
+async def recovery_stand(for_label, epoch):
+    global last_error
+    check_not_stopped(epoch)
+    api_id, key, parameter = resolve("recovery")
+    step = await send_sport(
+        key, api_id, parameter, f"RecoveryStand ({for_label})"
+    )
+    if step["status_code"] != 0:
+        last_error = f"RecoveryStand refused: {step['status_text']}"
+        raise HTTPException(409, last_error)
+    await asyncio.sleep(SETTLE)
+    check_not_stopped(epoch)
+    return step
+
+
+async def recover_to_standing(for_label, epoch):
+    """If the robot is sitting, lying, damped or in a held pose, bring it
+    back to standing first (Rise from sit / Stand up / end the pose), with a
+    settle pause. Caller holds action_lock. Returns the steps taken."""
+    global last_error
+    steps = []
+    for _ in range(3):
+        check_not_stopped(epoch)
+        if stance not in RECOVERY:
+            break
+        name, on = RECOVERY[stance]
+        api_id, key, parameter = resolve(name, on)
+        step = await send_sport(
+            key, api_id, parameter, f"{key} (preparing for {for_label})"
+        )
+        steps.append(step)
+        if step["status_code"] != 0:
+            last_error = (
+                f"{key} refused before {for_label}: {step['status_text']}"
+            )
+            raise HTTPException(409, last_error)
+        await asyncio.sleep(SETTLE)
+    check_not_stopped(epoch)
+    return steps
+
+
+async def run_command(name, on=True, *, automatic_recovery=True, interrupt_ai=True, guard=None):
+    """Recover before each posture/trick, then execute only after success."""
+    global busy, last_error
+    api_id, key, parameter = resolve(name, on)
+    label = key if parameter is None else f"{key} {'on' if on else 'off'}"
+    if not connected():
+        raise HTTPException(409, "Robot disconnected")
+    if interrupt_ai and (ai.running or plane.running):
+        stop("Manual command interrupted AI")
+    if action_lock.locked():
+        raise HTTPException(409, "Another operation is running")
+
+    async with action_lock:
+        busy = True
+        cancel_scheduled_recovery()
+        stop(cancel_ai=interrupt_ai)
+        epoch = stop_epoch
+        try:
+            steps = []
+            if name not in DIRECT and on:
+                steps = await recover_to_standing(label, epoch)
+            # Leaving a held pose / after-trick stance may already have sent
+            # RecoveryStand. Do not send it twice for the same action, or
+            # prepend RecoveryStand to an explicit RecoveryStand request.
+            if name != "recovery" and not any(
+                step["api_id"] == resolve("recovery")[0] for step in steps
+            ):
+                steps.append(await recovery_stand(label, epoch))
+            check_not_stopped(epoch)
+            if guard:
+                guard(decision=True)
+            duration = AUTO_RECOVER_AFTER.get(name, SETTLE) if on else SETTLE
+            timeout = max(SPORT_REPLY_TIMEOUT, duration + TRICK_REPLY_GRACE)
+            sent_at = time.monotonic()
+            result = await send_sport(key, api_id, parameter, label, timeout=timeout)
+            last_error = ""
+            after = None
+            delay = max(0, duration - (time.monotonic() - sent_at))
+            if (automatic_recovery and name in AUTO_RECOVER_AFTER and result["status_code"] == 0
+                    and epoch == stop_epoch):
+                # Ending a held pose early still gets its RecoveryStand.
+                # A reply may arrive after the trick finishes. Count from the
+                # send time rather than waiting for the entire trick twice.
+                schedule_recovery(delay)
+                after = (f"RecoveryStand in {delay:.1f}s, then BalanceStand "
+                         "and movement enabled")
+            result.update(
+                mode=motion_mode or "unknown",
+                stance=stance,
+                before=steps,
+                after=after,
+                remaining_seconds=delay,
+                note="Reply received; verify the robot actually moved",
+            )
+            return result
+        finally:
+            busy = False
+
+
+async def prepare_stance(epoch):
+    # Recover once, then balance. Joystick input and ordinary disarming do
+    # not invalidate recovery, so subsequent drive keys need no sport RPCs.
+    # From Sit / a held pose, leave that pose first. Caller holds action_lock.
+    global last_error
+    disarm()
+    steps = await recover_to_standing("driving", epoch)
+    if recovery_needed:
+        steps.append(await recovery_stand("driving", epoch))
+    if stance != "balanced":
+        step = await send_sport(
+            "BalanceStand", SPORT_CMD["BalanceStand"], None, "BalanceStand"
+        )
+        steps.append(step)
+        if step["status_code"] != 0:
+            last_error = f"BalanceStand refused: {step['status_text']}"
+            raise HTTPException(409, last_error)
+    check_not_stopped(epoch)
+    last_error = ""
+    return steps
+
+
+def encode_jpeg(frame):
+    width = min(CAMERA_WIDTH, frame.width)
+    height = max(2, round(frame.height * width / frame.width / 2) * 2)
+    image = frame.reformat(width=width, height=height, format="rgb24").to_image()
+    buf = io.BytesIO()
+    image.save(buf, "JPEG", quality=70)
+    return buf.getvalue()
+
+
+async def read_video(track):
+    # Registered with the driver's video channel; runs until the track ends.
+    global latest_jpeg, frame_at
+    source_robot, source_session = robot, camera_session
+    next_at = 0.0
+    while True:
+        try:
+            frame = await track.recv()
+        except Exception:
+            return
+        if robot is not source_robot or camera_session != source_session:
+            return
+        now = time.monotonic()
+        if now < next_at:
+            continue  # drop frames down to CAMERA_FPS
+        next_at = now + 1 / CAMERA_FPS
+        try:
+            jpeg = await asyncio.to_thread(encode_jpeg, frame)
+            if robot is not source_robot or camera_session != source_session:
+                return
+            latest_jpeg = jpeg
+            frame_at = time.monotonic()
+        except Exception as exc:
+            print(f"Camera frame encode failed: {exc}")
+
+
+async def after_connect():
+    # Same order as dimOS: register the reader, then ask the robot for video.
+    robot.video.add_track_callback(read_video)
+    robot.video.switchVideoChannel(True)
+    source = robot
+    def on_heading(message):
+        if robot is source:
+            heading.update(message)
+    for topic in ('LF_SPORT_MOD_STATE', 'LOW_STATE'):
+        source.datachannel.pub_sub.subscribe(RTC_TOPIC[topic], on_heading)
+    await check_mode()
+    # This installation uses Go2 Air: speech is played by the paired browser.
+    # Do not advertise an RTP sender as a built-in speaker on this model.
+
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(watchdog())
+    face_bridge.start()
+    try:
+        yield
+    finally:
+        await connection_watch.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await disconnect()
+        await ai.close()
+        await plane.close()
+        await face_bridge.close()
+        await vision.close()
+        await boxes.close()
+
+
+def on_robot_link_lost():
+    global stance, recovery_needed
+    stop("Robot link lost; movement stopped")
+    logger.warning("Robot link lost: %s", transport_state())
+    stance = "unknown"
+    recovery_needed = True
+    vision.invalidate_camera()
+    boxes.invalidate_camera()
+
+
+app = FastAPI(lifespan=lifespan)
+connection_watch = ConnectionSupervisor(
+    connected, lambda: action_lock.locked(), lambda: open_robot_connection(), on_robot_link_lost,
+)
+boxes = BoxService(lambda: (latest_jpeg, frame_at, camera_session), connected)
+vision = VisionService(lambda: (latest_jpeg, frame_at, camera_session), connected,
+                       box_status=boxes.status)
+vision._api_key = LOCAL_SETTINGS.get("OPENAI_API_KEY", "")
+vision.model = LOCAL_SETTINGS.get("OPENAI_VISION_MODEL", vision.model)
+
+
+def acquire_ai(control_id, epoch):
+    if plane.running or plane.busy or ai.running or ai.busy:
+        raise HTTPException(409, "Another activity owns control; stop it and wait before starting")
+    if (controller is None or not isinstance(control_id, str) or not controller_id
+            or not control_id.isascii() or len(control_id) != len(controller_id)
+            or not secrets.compare_digest(control_id, controller_id)):
+        raise HTTPException(409, "This tab must own dashboard controls before starting AI.")
+    if type(epoch) is not int or epoch != stop_epoch:
+        raise HTTPException(409, "Controls changed. Wait for status to update, then start AI again.")
+    if not connected() or time.monotonic() - last_input > 0.3:
+        raise HTTPException(409, "Connect the robot and wait for dashboard heartbeats.")
+    if busy or action_lock.locked() or recovering() or armed:
+        raise HTTPException(409, "Stop manual movement and wait for the current action before starting AI.")
+    stop(cancel_ai=False)
+    return controller, robot, camera_session
+
+
+def check_ai_context(context):
+    owner, source, session = context
+    if (controller is not owner or robot is not source or camera_session != session
+            or not connected() or time.monotonic() - last_input > 0.3):
+        raise AgentError("Robot, camera, or dashboard connection changed. AI stopped.")
+
+
+async def ai_wait(seconds, check):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        check()
+        await asyncio.sleep(min(0.05, max(0, deadline - time.monotonic())))
+    check()
+
+
+async def execute_ai(name, args, context, check):
+    global armed, desired, busy
+    validate_call(name, args)
+    check(decision=True)
+    if name in ("speak", "listen"):
+        disarm()
+        return await plane.call_audio(name, args, check)
+    if name in ("wait", "finish"):
+        disarm()
+        if name == "wait":
+            await ai_wait(args["seconds"], check)
+        return {"stopped": True}
+    if name == "move_robot":
+        if action_lock.locked():
+            raise AgentError("Another robot operation is running. AI stopped.")
+        async with action_lock:
+            busy = True
+            stop(cancel_ai=False)
+            epoch = stop_epoch
+            try:
+                await prepare_stance(epoch)
+                check(decision=True)
+                check_not_stopped(epoch)
+                speed = args["speed"]
+                desired = {"forward": (speed, 0, 0), "turn_left": (0, 0, speed),
+                           "turn_right": (0, 0, -speed)}[args["direction"]]
+                armed = True
+                # The watchdog sends the velocity. Real browser heartbeats are
+                # still required; AI must never manufacture its own keepalive.
+                await ai_wait(args["seconds"], check)
+                return {"accepted": True, "stopped": True,
+                        "note": "Joystick step ended; inspect the next image to assess movement."}
+            finally:
+                disarm()
+                busy = False
+    command = args["posture"] if name == "set_posture" else args["action"]
+    reply = await run_command(command, automatic_recovery=False, interrupt_ai=False, guard=check)
+    check()
+    if reply["status_code"] != 0:
+        raise AgentError(f"Robot refused {command}: {reply['status_text']}. AI stopped.")
+    await ai_wait(reply["remaining_seconds"], check)
+    return {"accepted": True, "status_code": 0, "stance": stance,
+            "note": "Command accepted; inspect the next image. Movement remains disarmed."}
+
+
+def finish_ai(context):
+    owner, source, session = context
+    if controller is owner and robot is source and camera_session == session:
+        stop(cancel_ai=False)
+
+
+ai = CameraAgent(
+    get_key=lambda: vision._api_key, set_key=vision.key_api,
+    get_frame=lambda: (latest_jpeg, frame_at, camera_session), acquire=acquire_ai,
+    check_context=check_ai_context,
+    robot_state=lambda: {"connected": connected(), "stance": stance,
+                         "mode": motion_mode, "armed": armed},
+    execute=execute_ai, finish=finish_ai,
+)
+ai.model = LOCAL_SETTINGS.get("OPENAI_CONTROL_MODEL", ai.model)
+app.include_router(ai.router)
+
+
+async def lesson_gesture(check):
+    check()
+    reply = await run_command("hello", automatic_recovery=False, interrupt_ai=False, guard=check)
+    check()
+    if reply["status_code"] != 0:
+        raise HTTPException(409, "Robot refused Hello")
+    await ai_wait(reply["remaining_seconds"], check)
+
+
+def acquire_audio_test(control_id, epoch):
+    # Tone/STT/TTS checks work without Go2, but still belong to this focused tab.
+    if (controller is None or not isinstance(control_id, str) or not control_id.isascii()
+            or not secrets.compare_digest(control_id, controller_id)
+            or type(epoch) is not int or epoch != stop_epoch or time.monotonic() - last_input > 0.3):
+        raise HTTPException(409, "Keep this dashboard focused; controls changed, so try the test again")
+    if ai.running or ai.busy or armed or busy or action_lock.locked() or recovering():
+        raise HTTPException(409, "Stop robot movement before running an audio test")
+    return controller, stop_epoch
+
+
+def check_audio_test(context):
+    owner, epoch = context
+    if owner is not controller or epoch != stop_epoch or time.monotonic() - last_input > 0.3:
+        raise HTTPException(409, "Audio test stopped because dashboard controls changed")
+
+
+async def demo_gesture(action, check):
+    if action not in ('hello', 'heart', 'content', 'front_jump'):
+        raise HTTPException(400, 'Unsupported demo gesture')
+    check()
+    reply = await run_command(action, automatic_recovery=False, interrupt_ai=False, guard=check)
+    check()
+    if reply["status_code"] != 0:
+        raise HTTPException(409, f'Go2 refused {action}')
+    await ai_wait(reply["remaining_seconds"], check)
+
+
+async def demo_turn(check):
+    global armed, desired, busy
+    check()
+    if not heading.status()['ready']:
+        raise HTTPException(409, 'Heading feedback unavailable; cannot start the turn')
+    if action_lock.locked():
+        raise HTTPException(409, 'Another robot action is running')
+    async with action_lock:
+        busy = True
+        stop(cancel_ai=False)
+        epoch = stop_epoch
+        try:
+            await prepare_stance(epoch)
+            check()
+            def command(forward, left, turn):
+                global desired, armed
+                desired = (forward, left, turn)
+                armed = bool(turn)
+                if not turn:
+                    disarm()
+            return await half_turn(heading.sample, command, check)
+        finally:
+            disarm()
+            busy = False
+
+
+speaker = Go2Speaker(lambda: robot, connected)
+face_bridge = FaceBridge(LOCAL_SETTINGS)
+plane = ControlPlane(vision=vision, acquire=acquire_ai, check_context=check_ai_context,
+                     stop_robot=stop, gesture=lesson_gesture, finish=finish_ai,
+                     audio_acquire=acquire_audio_test, audio_check=check_audio_test,
+                     demo_turn=demo_turn, demo_gesture=demo_gesture, observer=DemoObserver(vision), face_bridge=face_bridge,
+                     settings=LOCAL_SETTINGS)
+app.include_router(plane.router)
+app.include_router(vision.router)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["127.0.0.1", "localhost", *filter(None, LOCAL_SETTINGS.get("CONTROL_HOSTS", "").split(","))],
+)
+
+
+@app.middleware("http")
+async def protect_api(request: Request, call_next):
+    # LAN devices get role-scoped pairing keys, never the operator page/token.
+    if request.url.path in ("/", "/plane", "/controls", "/vision"):
+        if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+            return HTMLResponse("Open the control plane on the server's localhost address. Join other devices using their paired links.", status_code=403)
+    # Browser receives this per-run token from the local dashboard.
+    if request.url.path.startswith("/api/"):
+        if request.headers.get("X-Control-Token") != TOKEN:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=403)
+        if plane.running and request.method == "POST" and (
+                request.url.path.startswith("/api/vision/") or request.url.path == "/api/ai/key"):
+            return JSONResponse({"detail": "The activity owns camera analysis and its key. Use STOP ALL first."}, status_code=409)
+    return await call_next(request)
+
+
+@app.get("/plane", response_class=HTMLResponse)
+async def control_plane_page():
+    page = Path(__file__).with_name("plane_web").joinpath("operator.html").read_text()
+    return HTMLResponse(page.replace("__TOKEN__", TOKEN).replace("__ROBOT_IP__", html.escape(ROBOT_IP)),
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@app.get("/device/{role}", response_class=HTMLResponse)
+async def device_page(role: str):
+    if role not in ROLES:
+        raise HTTPException(404, "Unknown device role")
+    page = Path(__file__).with_name("plane_web").joinpath("device.html").read_text()
+    return HTMLResponse(page.replace("__ROLE__", role),
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@app.get("/plane-assets/{name}")
+async def plane_asset(name: str):
+    if name not in ("operator.js", "device.js", "deepgram.js", "hare.js", "audio_setup.js", "plane.css", "twinkle.js"):
+        raise HTTPException(404, "Asset not found")
+    return FileResponse(Path(__file__).with_name("plane_web") / name,
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/")
+async def landing():
+    return RedirectResponse("/plane", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/controls", response_class=HTMLResponse)
+async def home():
+    page = Path(__file__).with_name("index.html").read_text()
+    page = page.replace("__TOKEN__", TOKEN).replace("__ROBOT_IP__", html.escape(ROBOT_IP))
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/vision", response_class=HTMLResponse)
+async def vision_page():
+    page = Path(__file__).with_name("vision.html").read_text()
+    return HTMLResponse(page.replace("__TOKEN__", TOKEN),
+                        headers={"Cache-Control": "no-store"})
+
+
+
+@app.get("/api/ai/tools")
+async def tool_catalog():
+    return {
+        "version": 2, "tools": TOOLS,
+        "audio_dispatch": {"method": "POST", "path": "/api/plane/call", "tools": ["speak", "listen"], "result": "Poll /api/plane/status audio_tool; no robot or camera required, current focused control context required."},
+        "demos": {"start": "/api/plane/start", "events": "/api/plane/event", "names": ["count_check", "run_play", "soft_hands", "close", "backup"],
+            "motion": ["screen", "robot_gestures"], "gestures": ["heart", "content", "hello"],
+            "jump_clearance": "Boolean, false by default. Only physical Demo 2 may perform one forward jump after five hellos; requires 2 m of clear landing space.",
+            "action_status": "/api/plane/status: demo.action, demo.actions_completed"},
+        "dispatch": {"method": "POST", "path": "/api/ai/call",
+            "authentication": "X-Control-Token (server/operator only)",
+            "body": {"name": "move_robot", "arguments": {"direction": "forward", "seconds": 0.3, "speed": 0.15, "reason": "Visible clear space ahead"},
+                "run_id": "unique-call-id-at-least-16-chars", "control_id": "from ws/control ready", "control_epoch": "from api/status stop_epoch"},
+            "result": "Returns run status immediately. Poll /api/ai/status for phase and steps[].result. Reuse a run_id to avoid duplicate motion."},
+        "limits": {"max_step_seconds": 1, "max_joystick_input": 0.3, "camera_max_age_seconds": 2,
+            "operator_heartbeat_seconds": 0.3, "one_tool_at_a_time": True,
+            "stop": "POST /api/stop or Space; cancels pending actions and audio"},
+        "movements": [
+            {"name": name, "ai_tool": "move_robot" if name in ("forward", "turn_left", "turn_right") else None,
+             "argument": {"direction": name, "seconds": 0.3, "speed": 0.15} if name in ("forward", "turn_left", "turn_right") else None,
+             "manual_endpoint": "/ws/control", "manual_method": "WebSocket",
+             "manual_payload": {"type": "move", "forward": values[0], "left": values[1], "turn": values[2]},
+             "normal_command": "joystick", "ai_mode_command": "joystick"}
+            for name, values in {"forward": (0.15, 0, 0), "backward": (-0.15, 0, 0),
+                "strafe_left": (0, 0.15, 0), "strafe_right": (0, -0.15, 0),
+                "turn_left": (0, 0, 0.15), "turn_right": (0, 0, -0.15)}.items()
+        ] + [
+            {"name": name, "ai_tool": "set_posture", "argument": {"posture": name},
+             "manual_endpoint": "/api/posture/" + name, "normal_command": command, "ai_mode_command": command}
+            for name, command in POSTURES.items()
+        ] + [
+            {"name": name, "ai_tool": "perform_trick" if name in TRICKS else None,
+             "argument": {"action": name} if name in TRICKS else None,
+             "manual_endpoint": "/api/action/" + name, "normal_command": values[0], "ai_mode_command": values[1],
+             "held_pose": values[2], "duration_seconds": AUTO_RECOVER_AFTER.get(name, 3)}
+            for name, values in ACTIONS.items()
+        ],
+        "components": [
+            {"name": "Computer / external speaker test tone", "method": "POST", "path": "/api/plane/test", "arguments": {"kind": "tone"}, "requires_control_context": True},
+            {"name": "ElevenLabs voice on paired speaker", "method": "POST", "path": "/api/plane/test", "arguments": {"kind": "voice"}, "requires_control_context": True},
+            {"name": "Microphone test", "method": "POST", "path": "/api/plane/test", "arguments": {"kind": "microphone"}, "requires_control_context": True},
+            {"name": "Face expression", "method": "POST", "path": "/api/plane/face", "arguments": {"name": "Celebrate"}},
+            {"name": "Camera observation", "method": "POST", "path": "/api/vision/scan", "arguments": {}},
+            {"name": "Stop all", "method": "POST", "path": "/api/stop", "arguments": {}},
+        ],
+    }
+
+
+@app.get("/api/status")
+async def status():
+    return {
+        "ip": ROBOT_IP,
+        "configuration": {"file": ".env.local", "loaded": ENV_FILE.is_file()},
+        "connected": connected(),
+        "armed": armed,
+        "busy": busy,
+        "recovering": recovering(),
+        "mode": motion_mode,
+        "stance": stance,
+        "camera": bool(latest_jpeg) and time.monotonic() - frame_at < 2,
+        "heading": heading.status(),
+        "error": last_error,
+        "last_stop_reason": last_stop_reason,
+        "dashboard_connected": controller is not None,
+        "reconnecting": connection_watch.reconnecting,
+        "connection_message": connection_watch.message,
+        "transport": transport_state(),
+        "boxes": boxes.status(),
+        "ai": ai.status(),
+        "activity": {"running": plane.running, "phase": plane.phase},
+        "speaker": plane.status()["speaker"],
+        "stop_epoch": stop_epoch,
+    }
+
+
+@app.get("/camera.mjpeg")
+async def camera(token: str = ""):
+    # <img> tags cannot send headers, so this one endpoint takes the token
+    # as a query parameter instead of X-Control-Token.
+    if token != TOKEN:
+        raise HTTPException(403, "Unauthorized")
+
+    async def frames():
+        sent_at = -1.0
+        while connected():
+            if latest_jpeg and frame_at != sent_at:
+                sent_at = frame_at
+                yield (
+                    b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                    + str(len(latest_jpeg)).encode()
+                    + b"\r\n\r\n"
+                    + latest_jpeg
+                    + b"\r\n"
+                )
+            await asyncio.sleep(0.5 / CAMERA_FPS)
+
+    return StreamingResponse(
+        frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/camera.boxes.mjpeg")
+async def camera_boxes(token: str = ""):
+    if token != TOKEN:
+        raise HTTPException(403, "Unauthorized")
+    return StreamingResponse(
+        boxes.frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/connect")
+async def connect(options: ConnectOptions | None = None):
+    if action_lock.locked() and not connection_watch.reconnecting:
+        raise HTTPException(409, "Another operation is running")
+    await connection_watch.stop()
+    result = await open_robot_connection(options)
+    connection_watch.start()
+    return result
+
+
+async def open_robot_connection(options: ConnectOptions | None = None):
+    global robot, busy, last_error, ROBOT_IP
+    if action_lock.locked():
+        raise HTTPException(409, "Another operation is running")
+    async with action_lock:
+        if options is not None:
+            ROBOT_IP = str(options.ip)
+        busy = True
+        last_error = ""
+        conn = None
+        try:
+            await disconnect()
+            # Build locally; the watchdog only sees `robot` once validated.
+            conn = Go2Connection(
+                WebRTCConnectionMethod.LocalSTA,
+                ip=ROBOT_IP,
+                aes_128_key=LOCAL_SETTINGS.get("UNITREE_AES_128_KEY"),
+            )
+            await asyncio.wait_for(conn.connect(), timeout=40)
+            robot = conn
+            if not connected():
+                raise RuntimeError("WebRTC data channel did not open")
+            stop()
+            await after_connect()
+            return {"connected": True, "ip": ROBOT_IP, "mode": motion_mode}
+        except asyncio.CancelledError:
+            # Explicit Disconnect or shutdown can cancel a reconnect handshake.
+            # Release the partially initialized peer before dropping the lock.
+            robot = conn
+            await disconnect()
+            raise
+        except Exception as exc:
+            reason = str(exc) or type(exc).__name__
+            last_error = (
+                f"Could not connect to {ROBOT_IP}: {reason}. "
+                "Check the latest LAN discovery IP and that the Mac and robot "
+                "are on the same Wi-Fi. Close other robot clients before retrying."
+            )
+            robot = conn
+            await disconnect()
+            raise HTTPException(502, last_error or "Connection failed")
+        finally:
+            busy = False
+
+
+@app.post("/api/disconnect")
+async def disconnect_api():
+    if action_lock.locked() and not connection_watch.reconnecting:
+        raise HTTPException(409, "Another operation is running")
+    await connection_watch.stop()
+    async with action_lock:
+        await disconnect()
+    return {"connected": False}
+
+
+@app.post("/api/stop")
+async def stop_api():
+    stop("STOP requested")
+    return {"armed": False, "note": "Stop requested; verify physically"}
+
+
+@app.post("/api/arm")
+async def arm():
+    global armed, last_input, busy
+    if ai.running or plane.running:
+        stop("Manual movement interrupted AI")
+    if not connected() or controller is None:
+        raise HTTPException(409, "Connect robot and dashboard first")
+    epoch, owner = stop_epoch, controller
+    # Wait for the whole trick and recovery, including the scheduled delay.
+    # Never cancel that delay or recover in the middle of a trick.
+    try:
+        async with asyncio.timeout(ARM_WAIT):
+            while True:
+                if recovering():
+                    pending = recovery_task
+                    try:
+                        await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        if pending.cancelled():
+                            raise HTTPException(409, "Automatic recovery stopped")
+                        raise
+                    check_not_stopped(epoch)
+                    if not armed:
+                        raise HTTPException(
+                            409, last_error or "Automatic recovery did not enable movement"
+                        )
+                async with action_lock:
+                    check_not_stopped(epoch)
+                    if controller is not owner:
+                        raise HTTPException(409, "Dashboard disconnected")
+                    # A command may have scheduled recovery while we waited.
+                    if recovering():
+                        continue
+                    busy = True
+                    try:
+                        steps = []
+                        if stance != "balanced" or recovery_needed:
+                            steps = await prepare_stance(epoch)
+                        check_not_stopped(epoch)
+                        if controller is not owner:
+                            raise HTTPException(409, "Dashboard disconnected")
+                        armed = True
+                        last_input = time.monotonic()
+                        return {"armed": True, "stance": stance,
+                                "before": steps or "already in balance stand"}
+                    finally:
+                        busy = False
+    except asyncio.TimeoutError:
+        raise HTTPException(409, "Another operation is still running")
+
+
+@app.post("/api/posture/{name}")
+async def posture(name: str):
+    if name not in POSTURES:
+        raise HTTPException(404, "Unknown posture")
+    return await run_command(name)
+
+
+@app.post("/api/action/{name}")
+async def action(name: str, on: bool = True):
+    return await run_command(name, on)
+
+
+@app.post("/api/mode/{name}")
+async def set_mode(name: str):
+    # Motion switcher api 1002 = SelectMode. The controller swap takes a few
+    # seconds; dimOS waits 5 s after the same call.
+    global busy, last_error, stance, recovery_needed
+    if name not in MOTION_MODES:
+        raise HTTPException(404, "Unknown motion mode")
+    if not connected():
+        raise HTTPException(409, "Robot disconnected")
+    if ai.running or plane.running:
+        stop("Mode switch interrupted AI")
+    if action_lock.locked():
+        raise HTTPException(409, "Another operation is running")
+
+    async with action_lock:
+        busy = True
+        cancel_scheduled_recovery()
+        stance = "unknown"
+        recovery_needed = True
+        stop()
+        try:
+            reply = await request(
+                RTC_TOPIC["MOTION_SWITCHER"],
+                {"api_id": 1002, "parameter": {"name": name}},
+                timeout=10,
+            )
+            await asyncio.sleep(3)
+            current = await check_mode()
+            last_error = ""
+            return {
+                "requested": name,
+                "mode": current or "unknown",
+                "status_code": reply_status(reply),
+                "reply": reply,
+            }
+        except asyncio.TimeoutError:
+            last_error = f"Mode switch to {name}: no reply within 10s."
+            raise HTTPException(504, last_error)
+        finally:
+            busy = False
+
+
+@app.websocket("/ws/control")
+async def control(ws: WebSocket):
+    global controller, controller_id, desired, last_input
+    if not same_origin(ws) or ws.query_params.get("token") != TOKEN:
+        await ws.close(code=1008)
+        return
+
+    await ws.accept()
+    if controller is not None:
+        await ws.close(code=1008, reason="Another dashboard owns control")
+        return
+
+    controller = ws
+    controller_id = secrets.token_urlsafe(24)
+    stop("Dashboard connected; movement is disarmed")
+    try:
+        await ws.send_json({"type": "ready", "control_id": controller_id, "stop_epoch": stop_epoch})
+        while True:
+            data = await ws.receive_json()
+            if data.get("type") == "stop":
+                stop()
+                continue
+            if data.get("type") != "move":
+                continue
+
+            # Bound every command on the server.
+            values = [float(data.get(k, 0)) for k in ("forward", "left", "turn")]
+            if not all(math.isfinite(v) for v in values):
+                raise ValueError("Invalid movement")
+            last_input = time.monotonic()
+            if ai.running or plane.running:
+                if any(values):
+                    stop("Manual drive input interrupted AI; press again to drive")
+                # Zero heartbeats keep AI alive without replacing its velocity.
+                continue
+            desired = tuple(max(-1.0, min(1.0, v)) for v in values)
+            if not armed or busy:
+                desired = (0, 0, 0)
+    except WebSocketDisconnect:
+        logger.info("Dashboard socket disconnected; robot connection retained")
+    except Exception:
+        logger.warning("Dashboard socket failed", exc_info=True)
+    finally:
+        if controller is ws:
+            stop("Dashboard socket disconnected; movement stopped")
+            controller = None
+            controller_id = ""

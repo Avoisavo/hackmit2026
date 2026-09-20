@@ -1,0 +1,417 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const vm = require('node:vm');
+
+const script = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8')
+  .match(/<script>([\s\S]*?)<\/script>/)[1];
+
+function dashboard() {
+  const elements = new Map();
+  const listeners = {};
+  const intervals = new Map();
+  const timers = new Map();
+  const sockets = [];
+  let timerId = 0;
+  const sent = [];
+  const requests = [];
+  const state = {connected: true, armed: false, recovering: true,
+    mode: 'normal', stance: 'after_trick', error: ''};
+  const payloads = [];
+  const ui = {state, sent, requests, timers, sockets, payloads};
+  const response = body => ({ok: true, status: 200, json: async () => body});
+  ui.statusResponse = async () => response({...state});
+  ui.commandResponse = async url => response(url.startsWith('/api/action/')
+    ? {status_code: 0, command: 'Hello', after: 'RecoveryStand, BalanceStand, movement enabled'}
+    : {armed: url === '/api/arm'});
+  const document = {
+    hidden: false,
+    hasFocus: () => true,
+    querySelector(selector) {
+      if (!elements.has(selector)) elements.set(selector, {
+        textContent: '', checked: selector === '#controlBoxes', classList: {toggle() {}},
+      });
+      return elements.get(selector);
+    },
+    querySelectorAll: () => [],
+    addEventListener: (name, fn) => { listeners[name] = fn; },
+  };
+  class WebSocket {
+    static OPEN = 1;
+    readyState = 1;
+    constructor() { sockets.push(this); }
+    send(message) { sent.push(JSON.parse(message)); }
+    close() { this.readyState = 3; this.onclose?.({code: 1000}); }
+  }
+  const context = vm.createContext({
+    document, WebSocket, AbortSignal, location: {host: 'localhost'},
+    window: {addEventListener: (name, fn) => { listeners[name] = fn; }},
+    setInterval: (fn, delay) => intervals.set(delay, fn),
+    setTimeout: (fn, delay) => { timers.set(++timerId, {fn, delay}); return timerId; },
+    clearTimeout: id => timers.delete(id),
+    fetch: async (url, options) => {
+      requests.push(url);
+      payloads.push({url, options});
+      return url === '/api/status' ? ui.statusResponse() : ui.commandResponse(url, options);
+    },
+  });
+  vm.runInContext(script, context);
+  vm.runInContext('socket.onmessage({data: JSON.stringify({type: "ready", control_id: "test-owner-id"})})', context);
+  ui.run = code => vm.runInContext(code, context);
+  ui.poll = intervals.get(1000);
+  ui.move = intervals.get(100);
+  ui.key = (name, code, options = {}) => listeners[name]({code, preventDefault() {}, ...options});
+  ui.blur = () => listeners.blur();
+  ui.closeSocket = (code = 1006) => {
+    const socket = sockets.at(-1);
+    socket.readyState = 3;
+    socket.onclose({code, reason: code === 1008 ? 'Another dashboard owns control' : ''});
+  };
+  ui.retry = () => {
+    const [id, {fn}] = timers.entries().next().value;
+    timers.delete(id);
+    fn();
+  };
+  ui.ready = () => sockets.at(-1).onmessage({data: JSON.stringify({type: 'ready'})});
+  return ui;
+}
+
+test('AI key is sent only as authenticated JSON and immediately cleared from its field', async () => {
+  const ui = dashboard();
+  ui.run('aiKey.value = "sk-test-key"');
+  let finish;
+  ui.commandResponse = () => new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({configured: true})}); });
+  const pending = ui.run('document.querySelector("#aiKeyForm").onsubmit({preventDefault(){}})');
+  assert.equal(ui.run('aiKey.value'), '');
+  assert.equal(ui.payloads[0].url, '/api/ai/key');
+  assert.deepEqual(JSON.parse(ui.payloads[0].options.body), {api_key: 'sk-test-key'});
+  assert.equal(ui.payloads[0].options.headers['X-Control-Token'], '__TOKEN__');
+  finish();
+  await pending;
+  assert.doesNotMatch(ui.run('document.querySelector("#aiKeyStatus").textContent'), /sk-test-key/);
+});
+
+test('AI start binds goal to current controls and STOP generation, while heartbeats stay zero', async () => {
+  const ui = dashboard();
+  ui.state.stop_epoch = 42;
+  ui.run('aiGoal.value = "Wave when you see a person"');
+  ui.commandResponse = async () => ({ok: true, json: async () => ({running: true, busy: true, message: 'Thinking'})});
+  await ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  const call = ui.payloads.find(item => item.url === '/api/ai/start');
+  const payload = JSON.parse(call.options.body);
+  assert.equal(payload.goal, 'Wave when you see a person');
+  assert.equal(payload.control_epoch, 42);
+  assert.equal(payload.control_id, 'test-owner-id');
+  assert.match(payload.run_id, /^[A-Za-z0-9_-]{16,80}$/);
+  assert.equal(ui.run('enabled'), false);
+  ui.move();
+  assert.deepEqual(ui.sent.at(-1), {type: 'move', forward: 0, left: 0, turn: 0});
+  assert.equal(ui.run('aiActive()'), true);
+});
+
+test('blur during start status lookup prevents a delayed AI start request', async () => {
+  const ui = dashboard();
+  ui.run('aiGoal.value = "Wave"');
+  let finish;
+  ui.statusResponse = () => new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({stop_epoch: 42})}); });
+  const pending = ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  ui.blur();
+  finish();
+  await pending;
+  assert.equal(ui.requests.includes('/api/ai/start'), false);
+  assert.equal(ui.run('aiActive()'), false);
+});
+
+test('STOP wins over a late AI start response and requires a fresh manual drive press', async () => {
+  const ui = dashboard();
+  ui.run('aiGoal.value = "Wave"');
+  let finish, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  ui.commandResponse = async url => {
+    if (url !== '/api/ai/start') return {ok: true, json: async () => ({})};
+    entered();
+    return new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({running: true, busy: true})}); });
+  };
+  const pending = ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  await started;
+  ui.key('keydown', 'Space');
+  finish();
+  await pending;
+  assert.equal(ui.run('aiActive()'), false);
+  assert.equal(ui.run('enabled'), false);
+  ui.key('keydown', 'KeyW', {repeat: true});
+  assert.equal(ui.requests.includes('/api/arm'), false);
+});
+
+test('manual driving cancels AI and consumes the first key, with no automatic takeover', async () => {
+  const ui = dashboard();
+  ui.run('renderAi({running: true, busy: true})');
+  ui.key('keydown', 'KeyW');
+  assert.equal(ui.run('aiActive()'), false);
+  assert.equal(ui.run('held.size'), 0);
+  assert.equal(ui.requests.includes('/api/stop'), true);
+  assert.equal(ui.requests.includes('/api/arm'), false);
+  ui.key('keydown', 'KeyW', {repeat: true});
+  assert.equal(ui.requests.includes('/api/arm'), false);
+  ui.key('keydown', 'KeyW', {repeat: false});
+  assert.equal(ui.requests.includes('/api/arm'), true);
+});
+
+test('spaces can be typed into a stopped goal, but Space stops an active AI run there', () => {
+  const ui = dashboard();
+  const target = ui.run('aiGoal');
+  ui.key('keydown', 'Space', {target});
+  assert.equal(ui.requests.length, 0);
+  ui.run('renderAi({running: true})');
+  ui.key('keydown', 'Space', {target});
+  assert.deepEqual(ui.requests, ['/api/stop']);
+});
+
+test('AI errors survive polling and history is rendered as text, without HTML interpretation', async () => {
+  const ui = dashboard();
+  ui.run('aiKey.value = "bad-key"');
+  ui.commandResponse = async () => ({ok: false, json: async () => ({detail: 'Invalid key'})});
+  await ui.run('document.querySelector("#aiKeyForm").onsubmit({preventDefault(){}})');
+  ui.state.ai = {message: 'Idle', steps: [{tool: 'finish', arguments: {reason: '<img src=x onerror=alert(1)>'}, result: 'Done'}]};
+  await ui.poll();
+  assert.equal(ui.run('aiStatus.textContent'), 'Invalid key');
+  assert.match(ui.run('document.querySelector("#aiHistory").textContent'), /<img/);
+  assert.equal(ui.run('document.querySelector("#aiHistory").innerHTML'), undefined);
+});
+
+test('a rejected dashboard cannot start AI', async () => {
+  const ui = dashboard();
+  ui.closeSocket(1008);
+  ui.run('aiGoal.value = "Wave"');
+  await ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  assert.equal(ui.requests.length, 0);
+});
+
+test('socket loss reconnects with zero input and requires a fresh key after ownership is confirmed', async () => {
+  const ui = dashboard();
+  await ui.run('arm()');
+  ui.key('keydown', 'KeyW');
+  ui.closeSocket();
+  assert.equal(ui.run('enabled'), false);
+  assert.equal(ui.run('held.size'), 0);
+  assert.equal(ui.timers.size, 1);
+  assert.equal([...ui.timers.values()][0].delay, 1000);
+  const armsBefore = ui.requests.filter(url => url === '/api/arm').length;
+  ui.retry();
+  assert.equal(ui.sockets.length, 2);
+  await ui.run('arm()');
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, armsBefore);
+  ui.ready();
+  ui.key('keydown', 'KeyW', {repeat: true});
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 0);
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, armsBefore);
+  ui.key('keydown', 'KeyW', {repeat: false});
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, armsBefore + 1);
+});
+
+test('a rejected second tab cannot stop or arm the owning dashboard through background events', async () => {
+  const ui = dashboard();
+  ui.closeSocket(1008);
+  assert.equal(ui.timers.size, 0);
+  ui.blur();
+  await ui.run('arm()');
+  assert.equal(ui.requests.length, 0);
+  assert.equal(ui.run('reconnectControl.hidden'), false);
+  ui.key('keydown', 'Space');
+  assert.deepEqual(ui.requests, ['/api/stop']);
+});
+
+test('socket recovery discards an old in-flight arm result', async () => {
+  const ui = dashboard();
+  let finish;
+  ui.commandResponse = () => new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({armed: true})}); });
+  const arm = ui.run('arm()');
+  ui.closeSocket();
+  ui.retry();
+  ui.ready();
+  finish();
+  await arm;
+  assert.equal(ui.run('enabled'), false);
+});
+
+test('robot transport recovery never replays a held drive key', async () => {
+  const ui = dashboard();
+  await ui.poll();
+  await ui.run('arm()');
+  ui.key('keydown', 'KeyW');
+  ui.state.connected = false;
+  ui.state.reconnecting = true;
+  await ui.poll();
+  assert.equal(ui.run('enabled'), false);
+  const requests = ui.requests.filter(url => url === '/api/arm').length;
+  Object.assign(ui.state, {connected: true, reconnecting: false, armed: false});
+  await ui.poll();
+  ui.key('keydown', 'KeyW', {repeat: true});
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 0);
+  assert.equal(ui.requests.filter(url => url === '/api/arm').length, requests);
+});
+
+test('server restart cancels retries instead of reconnecting with an expired token', async () => {
+  const ui = dashboard();
+  ui.closeSocket();
+  assert.equal(ui.timers.size, 1);
+  ui.statusResponse = async () => ({status: 403, ok: false});
+  await ui.poll();
+  assert.equal(ui.timers.size, 0);
+  ui.run('openControl()');
+  assert.equal(ui.sockets.length, 1);
+  assert.equal(ui.run('controlReady'), false);
+});
+
+test('object boxes share the driving camera and toggling never changes movement', async () => {
+  const ui = dashboard();
+  await ui.run('arm()');
+  Object.assign(ui.state, {armed: true, camera: true, boxes: {
+    state: 'running', count: 2, fps: 8, frame_age_seconds: 0.1, error: '',
+  }});
+  await ui.poll();
+  assert.match(ui.run('cam.src'), /^\/camera.boxes.mjpeg\?token=/);
+  assert.match(ui.run('boxesStatus.textContent'), /2 detections/);
+  const requests = ui.requests.length;
+  ui.run('controlBoxes.checked = false; controlBoxes.onchange()');
+  assert.match(ui.run('cam.src'), /^\/camera.mjpeg\?token=/);
+  assert.equal(ui.run('enabled'), true);
+  assert.equal(ui.requests.length, requests);
+  ui.key('keydown', 'KeyW');
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 1);
+});
+
+test('detector failure falls back to raw video and can be retried without robot commands', async () => {
+  const ui = dashboard();
+  ui.state.boxes = {state: 'error', error: 'Model unavailable'};
+  await ui.poll();
+  assert.match(ui.run('cam.src'), /^\/camera.mjpeg\?token=/);
+  assert.match(ui.run('boxesStatus.textContent'), /Model unavailable.*Showing raw camera/);
+  ui.run('controlBoxes.checked = false; controlBoxes.onchange()');
+  ui.run('controlBoxes.checked = true; controlBoxes.onchange()');
+  assert.match(ui.run('cam.src'), /^\/camera.boxes.mjpeg\?token=/);
+  assert.deepEqual(ui.requests, ['/api/status']);
+});
+
+test('expired session stops the camera and a disconnected robot clears its stream', async () => {
+  const ui = dashboard();
+  await ui.poll();
+  ui.state.connected = false;
+  await ui.poll();
+  assert.equal(ui.run('cam.src'), '');
+  ui.state.connected = true;
+  await ui.poll();
+  ui.statusResponse = async () => ({ok: false, status: 403});
+  await ui.poll();
+  assert.equal(ui.run('cam.src'), '');
+  assert.equal(ui.run('camConnected'), false);
+  assert.match(ui.run('boxesStatus.textContent'), /Reload/);
+});
+
+test('trick recovers, enables the dashboard and drives with held WASD at 1.0', async () => {
+  const ui = dashboard();
+  await ui.run("action('hello')");
+  ui.key('keydown', 'KeyW');
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 0);
+  assert.ok(!ui.requests.includes('/api/arm'));
+  assert.ok(!ui.requests.includes('/api/stop'));
+  await ui.poll();
+  assert.equal(ui.run('enabled'), false);
+  Object.assign(ui.state, {armed: true, recovering: false, stance: 'balanced'});
+  await ui.poll();
+  assert.equal(ui.run('enabled'), true);
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 1.0);
+  ui.key('keyup', 'KeyW');
+  ui.move();
+  assert.equal(ui.sent.at(-1).forward, 0);
+});
+
+test('STOP and blur prevent a delayed status response from enabling movement', async () => {
+  for (const stop of [ui => ui.run("halt('STOP pressed')"), ui => ui.blur()]) {
+    const ui = dashboard();
+    await ui.run("action('hello')");
+    ui.state.armed = true;
+    let finish;
+    const original = ui.statusResponse;
+    ui.statusResponse = () => new Promise(resolve => { finish = () => resolve(original()); });
+    const poll = ui.poll();
+    stop(ui);
+    finish();
+    await poll;
+    assert.equal(ui.run('enabled'), false);
+    assert.equal(ui.run('autoEnable'), false);
+  }
+});
+
+test('recovery failure leaves the dashboard disabled and allows a later retry', async () => {
+  const ui = dashboard();
+  await ui.run("action('hello')");
+  Object.assign(ui.state, {recovering: false, error: 'RecoveryStand refused'});
+  await ui.poll();
+  assert.equal(ui.run('enabled'), false);
+  assert.equal(ui.run('autoEnable'), false);
+  ui.key('keydown', 'KeyW');
+  assert.ok(ui.requests.includes('/api/arm'));
+});
+
+test('a refused trick cannot authorize automatic enabling', async () => {
+  const ui = dashboard();
+  ui.commandResponse = async () => ({ok: true,
+    json: async () => ({status_code: 3202, command: 'Hello', status_text: 'refused'})});
+  await ui.run("action('hello')");
+  ui.state.armed = true;
+  await ui.poll();
+  assert.equal(ui.run('autoEnable'), false);
+  assert.equal(ui.run('enabled'), false);
+});
+
+test('status polls never overlap, and the next completed poll enables after recovery', async () => {
+  const ui = dashboard();
+  await ui.run("action('hello')");
+  const oldResponse = await ui.statusResponse();
+  let finish;
+  ui.statusResponse = () => new Promise(resolve => { finish = () => resolve(oldResponse); });
+  const stalePoll = ui.poll();
+  ui.statusResponse = async () => ({ok: true, json: async () => ({...ui.state, armed: true})});
+  await ui.poll();
+  assert.equal(ui.requests.filter(url => url === '/api/status').length, 1);
+  finish();
+  await stalePoll;
+  await ui.poll();
+  assert.equal(ui.run('enabled'), true);
+});
+
+test('a status reply started before arming cannot undo the new arm', async () => {
+  const ui = dashboard();
+  const oldResponse = await ui.statusResponse();
+  let finish;
+  ui.statusResponse = () => new Promise(resolve => { finish = () => resolve(oldResponse); });
+  const poll = ui.poll();
+  await ui.run('arm()');
+  finish();
+  await poll;
+  assert.equal(ui.run('enabled'), true);
+});
+
+test('an old arm response cannot disable a newer trick recovery', async () => {
+  const ui = dashboard();
+  const original = ui.commandResponse;
+  let finish;
+  ui.commandResponse = url => url === '/api/arm'
+    ? new Promise(resolve => { finish = () => resolve(original(url)); })
+    : original(url);
+  const arming = ui.run('arm()');
+  await ui.run("action('hello')");
+  finish();
+  await arming;
+  assert.equal(ui.run('autoEnable'), true);
+  ui.state.armed = true;
+  await ui.poll();
+  assert.equal(ui.run('enabled'), true);
+});
