@@ -18,7 +18,8 @@ function dashboard() {
   const requests = [];
   const state = {connected: true, armed: false, recovering: true,
     mode: 'normal', stance: 'after_trick', error: ''};
-  const ui = {state, sent, requests, timers, sockets};
+  const payloads = [];
+  const ui = {state, sent, requests, timers, sockets, payloads};
   const response = body => ({ok: true, status: 200, json: async () => body});
   ui.statusResponse = async () => response({...state});
   ui.commandResponse = async url => response(url.startsWith('/api/action/')
@@ -49,13 +50,14 @@ function dashboard() {
     setInterval: (fn, delay) => intervals.set(delay, fn),
     setTimeout: (fn, delay) => { timers.set(++timerId, {fn, delay}); return timerId; },
     clearTimeout: id => timers.delete(id),
-    fetch: async url => {
+    fetch: async (url, options) => {
       requests.push(url);
-      return url === '/api/status' ? ui.statusResponse() : ui.commandResponse(url);
+      payloads.push({url, options});
+      return url === '/api/status' ? ui.statusResponse() : ui.commandResponse(url, options);
     },
   });
   vm.runInContext(script, context);
-  vm.runInContext('socket.onmessage({data: JSON.stringify({type: "ready"})})', context);
+  vm.runInContext('socket.onmessage({data: JSON.stringify({type: "ready", control_id: "test-owner-id"})})', context);
   ui.run = code => vm.runInContext(code, context);
   ui.poll = intervals.get(1000);
   ui.move = intervals.get(100);
@@ -74,6 +76,117 @@ function dashboard() {
   ui.ready = () => sockets.at(-1).onmessage({data: JSON.stringify({type: 'ready'})});
   return ui;
 }
+
+test('AI key is sent only as authenticated JSON and immediately cleared from its field', async () => {
+  const ui = dashboard();
+  ui.run('aiKey.value = "sk-test-key"');
+  let finish;
+  ui.commandResponse = () => new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({configured: true})}); });
+  const pending = ui.run('document.querySelector("#aiKeyForm").onsubmit({preventDefault(){}})');
+  assert.equal(ui.run('aiKey.value'), '');
+  assert.equal(ui.payloads[0].url, '/api/ai/key');
+  assert.deepEqual(JSON.parse(ui.payloads[0].options.body), {api_key: 'sk-test-key'});
+  assert.equal(ui.payloads[0].options.headers['X-Control-Token'], '__TOKEN__');
+  finish();
+  await pending;
+  assert.doesNotMatch(ui.run('document.querySelector("#aiKeyStatus").textContent'), /sk-test-key/);
+});
+
+test('AI start binds goal to current controls and STOP generation, while heartbeats stay zero', async () => {
+  const ui = dashboard();
+  ui.state.stop_epoch = 42;
+  ui.run('aiGoal.value = "Wave when you see a person"');
+  ui.commandResponse = async () => ({ok: true, json: async () => ({running: true, busy: true, message: 'Thinking'})});
+  await ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  const call = ui.payloads.find(item => item.url === '/api/ai/start');
+  const payload = JSON.parse(call.options.body);
+  assert.equal(payload.goal, 'Wave when you see a person');
+  assert.equal(payload.control_epoch, 42);
+  assert.equal(payload.control_id, 'test-owner-id');
+  assert.match(payload.run_id, /^[A-Za-z0-9_-]{16,80}$/);
+  assert.equal(ui.run('enabled'), false);
+  ui.move();
+  assert.deepEqual(ui.sent.at(-1), {type: 'move', forward: 0, left: 0, turn: 0});
+  assert.equal(ui.run('aiActive()'), true);
+});
+
+test('blur during start status lookup prevents a delayed AI start request', async () => {
+  const ui = dashboard();
+  ui.run('aiGoal.value = "Wave"');
+  let finish;
+  ui.statusResponse = () => new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({stop_epoch: 42})}); });
+  const pending = ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  ui.blur();
+  finish();
+  await pending;
+  assert.equal(ui.requests.includes('/api/ai/start'), false);
+  assert.equal(ui.run('aiActive()'), false);
+});
+
+test('STOP wins over a late AI start response and requires a fresh manual drive press', async () => {
+  const ui = dashboard();
+  ui.run('aiGoal.value = "Wave"');
+  let finish, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  ui.commandResponse = async url => {
+    if (url !== '/api/ai/start') return {ok: true, json: async () => ({})};
+    entered();
+    return new Promise(resolve => { finish = () => resolve({ok: true, json: async () => ({running: true, busy: true})}); });
+  };
+  const pending = ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  await started;
+  ui.key('keydown', 'Space');
+  finish();
+  await pending;
+  assert.equal(ui.run('aiActive()'), false);
+  assert.equal(ui.run('enabled'), false);
+  ui.key('keydown', 'KeyW', {repeat: true});
+  assert.equal(ui.requests.includes('/api/arm'), false);
+});
+
+test('manual driving cancels AI and consumes the first key, with no automatic takeover', async () => {
+  const ui = dashboard();
+  ui.run('renderAi({running: true, busy: true})');
+  ui.key('keydown', 'KeyW');
+  assert.equal(ui.run('aiActive()'), false);
+  assert.equal(ui.run('held.size'), 0);
+  assert.equal(ui.requests.includes('/api/stop'), true);
+  assert.equal(ui.requests.includes('/api/arm'), false);
+  ui.key('keydown', 'KeyW', {repeat: true});
+  assert.equal(ui.requests.includes('/api/arm'), false);
+  ui.key('keydown', 'KeyW', {repeat: false});
+  assert.equal(ui.requests.includes('/api/arm'), true);
+});
+
+test('spaces can be typed into a stopped goal, but Space stops an active AI run there', () => {
+  const ui = dashboard();
+  const target = ui.run('aiGoal');
+  ui.key('keydown', 'Space', {target});
+  assert.equal(ui.requests.length, 0);
+  ui.run('renderAi({running: true})');
+  ui.key('keydown', 'Space', {target});
+  assert.deepEqual(ui.requests, ['/api/stop']);
+});
+
+test('AI errors survive polling and history is rendered as text, without HTML interpretation', async () => {
+  const ui = dashboard();
+  ui.run('aiKey.value = "bad-key"');
+  ui.commandResponse = async () => ({ok: false, json: async () => ({detail: 'Invalid key'})});
+  await ui.run('document.querySelector("#aiKeyForm").onsubmit({preventDefault(){}})');
+  ui.state.ai = {message: 'Idle', steps: [{tool: 'finish', arguments: {reason: '<img src=x onerror=alert(1)>'}, result: 'Done'}]};
+  await ui.poll();
+  assert.equal(ui.run('aiStatus.textContent'), 'Invalid key');
+  assert.match(ui.run('document.querySelector("#aiHistory").textContent'), /<img/);
+  assert.equal(ui.run('document.querySelector("#aiHistory").innerHTML'), undefined);
+});
+
+test('a rejected dashboard cannot start AI', async () => {
+  const ui = dashboard();
+  ui.closeSocket(1008);
+  ui.run('aiGoal.value = "Wave"');
+  await ui.run('document.querySelector("#aiGoalForm").onsubmit({preventDefault(){}})');
+  assert.equal(ui.requests.length, 0);
+});
 
 test('socket loss reconnects with zero input and requires a fresh key after ownership is confirmed', async () => {
   const ui = dashboard();

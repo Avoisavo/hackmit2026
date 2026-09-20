@@ -217,7 +217,11 @@ class DashboardSocketTests(unittest.TestCase):
             route = 'ws://127.0.0.1/ws/control?token=' + app.TOKEN
             headers = {'origin': 'http://127.0.0.1'}
             with client.websocket_connect(route, headers=headers) as first:
-                self.assertEqual(first.receive_json(), {'type': 'ready'})
+                ready = first.receive_json()
+                self.assertEqual(ready['type'], 'ready')
+                self.assertEqual(ready['control_id'], app.controller_id)
+                self.assertGreaterEqual(len(ready['control_id']), 24)
+                self.assertEqual(ready['stop_epoch'], app.stop_epoch)
                 app.armed = True
                 owner = app.controller
                 with client.websocket_connect(route, headers=headers) as second:

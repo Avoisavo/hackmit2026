@@ -57,6 +57,11 @@
   .panel { background: #192130; padding: 18px; border-radius: 14px; margin-bottom: 14px; }
   .panel h2 { font-size: 16px; margin: 0 0 8px; }
   .panel p.small { font-size: 14px; color: #a9b4c8; margin: 6px 0; }
+  #aiGoal { width: calc(100% - 34px); }
+  #aiKey { width: 280px; }
+  #aiStart { background: #245c48; }
+  #aiStop { background: #b42335; }
+  #aiHistory { font-size: 14px; line-height: 1.5; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
 
@@ -117,6 +122,32 @@
      STOP, posture buttons, tab switches and loss of window focus disarm;
      the next key press enables movement again.</p>
 </div>
+
+<section class="panel" aria-labelledby="aiHeading">
+  <h2 id="aiHeading">AI camera control</h2>
+  <p class="small">Give the robot a goal. OpenAI looks at its front camera, chooses a tool,
+    then checks a new frame after each action. Starting a run sends camera images and
+    your goal to OpenAI and allows the robot to move. Keep this tab focused.</p>
+  <form id="aiKeyForm">
+    <label for="aiKey">OpenAI API key</label>
+    <input id="aiKey" type="password" autocomplete="off" placeholder="sk-…" maxlength="512">
+    <button id="aiSaveKey" type="submit">Save key for this session</button>
+  </form>
+  <p id="aiKeyStatus" class="small">Uses the same server-held key as scene counting, or OPENAI_API_KEY.</p>
+  <form id="aiGoalForm">
+    <label for="aiGoal">What should the robot do?</label>
+    <input id="aiGoal" type="text" maxlength="500" required autocomplete="off"
+      value="Wave once when a person is in front of you, then stop.">
+    <button id="aiStart" type="submit">Start AI</button>
+    <button id="aiStop" type="button" onclick="halt('STOP pressed')">Stop AI</button>
+  </form>
+  <p class="small">Up to 6 decisions per run: a gesture, posture, wait, or a short forward/turn
+    step (maximum 1 second at 0.3 joystick input). This camera cannot measure clearance or
+    guarantee obstacle avoidance. STOP, manual input, focus loss, stale video, or a lost
+    connection cancels the run. AI finishes disarmed; it never resumes after reconnecting.</p>
+  <p id="aiStatus" role="status" aria-live="polite">Connect the robot and wait for a live camera.</p>
+  <pre id="aiHistory"></pre>
+</section>
 
 <div class="panel">
   <h2>Tricks</h2>
@@ -198,6 +229,92 @@ let leaving = false;
 let requireFreshPress = false;
 let robotConnected = null;
 let statusPending = false;
+let aiState = {};
+let aiStarting = false;
+let aiStartPending = false;
+let aiError = "";
+let controlId = "";
+const aiGoal = document.querySelector("#aiGoal");
+const aiKey = document.querySelector("#aiKey");
+const aiStatus = document.querySelector("#aiStatus");
+
+function aiActive() { return aiStarting || Boolean(aiState.running); }
+
+function renderAi(state) {
+  aiState = state || {};
+  document.querySelector("#aiKeyStatus").textContent = aiState.configured
+    ? `API key configured · ${aiState.model || 'OpenAI'} · key stays in server memory.`
+    : "Add an OpenAI API key here, in scene counting, or via OPENAI_API_KEY.";
+  aiStatus.textContent = aiError || aiState.message || "Connect the robot and wait for a live camera.";
+  document.querySelector("#aiStart").disabled = aiStartPending || Boolean(aiState.busy);
+  document.querySelector("#aiSaveKey").disabled = Boolean(aiState.busy);
+  document.querySelector("#aiHistory").textContent = (aiState.steps || []).map((step, index) =>
+    `${index + 1}. ${step.tool} ${JSON.stringify(step.arguments)}\n   ${typeof step.result === 'string' ? step.result : JSON.stringify(step.result)}`
+  ).join("\n\n");
+}
+
+async function aiRequest(path, payload) {
+  const response = await fetch("/api/ai/" + path, {
+    method: "POST", headers: {"X-Control-Token": token, "Content-Type": "application/json"},
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(10000)
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : "AI request failed.");
+  return body;
+}
+
+document.querySelector("#aiKeyForm").onsubmit = async event => {
+  event.preventDefault();
+  const key = aiKey.value.trim();
+  aiKey.value = "";
+  aiError = "";
+  try { renderAi(await aiRequest("key", {api_key: key})); }
+  catch (error) { aiStatus.textContent = aiError = error.message; }
+};
+aiKey.onfocus = () => halt("editing AI key");
+aiGoal.onfocus = () => halt("editing AI goal");
+document.querySelector("#aiGoalForm").onsubmit = async event => {
+  event.preventDefault();
+  aiError = "";
+  if (aiStartPending || aiState.busy || !controlReady || !controlId ||
+      document.hidden || !document.hasFocus()) {
+    aiStatus.textContent = "Wait for this tab's controls and any pending AI request before starting.";
+    return;
+  }
+  if (enabled || arming || commandInFlight || autoEnable) {
+    halt("stop manual movement before AI");
+    aiStatus.textContent = "Manual movement stopped. Start AI again when the robot is ready.";
+    return;
+  }
+  clearMovement();
+  const epoch = haltCount;
+  aiStarting = aiStartPending = true;
+  document.querySelector("#aiStart").disabled = true;
+  aiStatus.textContent = "Starting camera control…";
+  try {
+    // Bind this start request to the current STOP generation. A STOP that wins
+    // the race on the server invalidates a delayed start, even across HTTP/WS.
+    const status = await fetch("/api/status", {
+      headers: {"X-Control-Token": token}, signal: AbortSignal.timeout(3000)
+    });
+    if (!status.ok) throw new Error("Reload this page to restore the control session.");
+    const state = await status.json();
+    if (epoch !== haltCount) return;
+    const body = await aiRequest("start", {
+      goal: aiGoal.value.trim(), control_id: controlId, control_epoch: state.stop_epoch,
+      run_id: `run_${Date.now()}_${epoch}`
+    });
+    if (epoch === haltCount) renderAi(body);
+  } catch (error) {
+    if (epoch === haltCount) {
+      halt("AI start failed");
+      aiStatus.textContent = aiError = error.message;
+    }
+  } finally {
+    aiStarting = aiStartPending = false;
+    document.querySelector("#aiStart").disabled = Boolean(aiState.busy);
+  }
+};
 
 function note(message) {
   hint.textContent = message;
@@ -250,6 +367,8 @@ function clearMovement() {
   autoEnable = false;
   setEnabled(false);
   requireFreshPress = true;
+  aiStarting = false;
+  if (aiState.running) renderAi({...aiState, running: false, message: "AI interrupted; movement disarmed."});
 }
 
 function halt(reason) {
@@ -261,6 +380,10 @@ function halt(reason) {
 }
 
 function arm() {
+  if (aiActive()) {
+    halt("manual movement interrupted AI");
+    return Promise.resolve(false);
+  }
   if (!controlReady || robotConnected === false || sessionExpired) {
     note("Wait for the robot and dashboard controls to reconnect, then press a fresh drive key.");
     return Promise.resolve(false);
@@ -412,6 +535,7 @@ function openControl() {
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
   controlReady = false;
+  controlId = "";
   reconnectControl.hidden = true;
   controlStatus.textContent = "Connecting dashboard controls… Movement is disarmed.";
   const candidate = new WebSocket(
@@ -424,12 +548,14 @@ function openControl() {
     try { message = JSON.parse(event.data); } catch { return; }
     if (message.type !== "ready") return;
     controlReady = true;
+    controlId = message.control_id || "";
     reconnectAttempts = 0;
     controlStatus.textContent = "Dashboard controls connected.";
   };
   candidate.onclose = event => {
     if (socket !== candidate) return;
     controlReady = false;
+    controlId = "";
     clearMovement();
     if (sessionExpired || leaving) return;
     if (event.code === 1008) {
@@ -450,6 +576,7 @@ document.querySelectorAll("[data-direction]").forEach(button => {
     // a native menu that would swallow the release.
     if (event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
+    if (aiActive()) { halt("manual movement interrupted AI"); return; }
     button.setPointerCapture(event.pointerId);
     requireFreshPress = false;
     held.add(button.dataset.direction);
@@ -463,6 +590,9 @@ document.querySelectorAll("[data-direction]").forEach(button => {
 });
 
 window.addEventListener("keydown", event => {
+  // Let users type a goal containing spaces while stopped. Space remains STOP
+  // everywhere during an AI run, including inside the goal field.
+  if (event.code === "Space" && event.target === aiGoal && !aiActive()) return;
   if (event.code === "Space") {
     event.preventDefault();
     halt("STOP pressed");
@@ -473,6 +603,7 @@ window.addEventListener("keydown", event => {
   const direction = keyMap[event.code];
   if (!direction) return;
   event.preventDefault();
+  if (aiActive()) { halt("manual movement interrupted AI"); return; }
   if (event.repeat && requireFreshPress) return;
   requireFreshPress = false;
   held.add(direction);
@@ -555,6 +686,7 @@ setInterval(async () => {
     if (state.connected !== camConnected ||
         (state.connected && cameraSource !== desiredCameraSource())) showCamera(state.connected);
     renderBoxesStatus();
+    if (epoch === armEpoch && !aiStartPending) renderAi(state.ai);
     // Adopt automatic enabling only for this window's successful trick.
     // STOP/blur and newer commands invalidate both that permission and old polls.
     if (epoch === armEpoch && !arming && !commandInFlight) {

@@ -28,8 +28,8 @@ To select this copy explicitly from any terminal directory, use:
 ```
 
 The updated controls include **Robot connection → Robot IP**, a **Show labeled
-object boxes** checkbox under the camera, and an **Open camera object recognition
-& counting** link. If any are missing, stop the old server and use the explicit
+object boxes** checkbox under the camera, an **AI camera control** panel, and an
+**Open camera object recognition & counting** link. If any are missing, stop the old server and use the explicit
 command above, then reload the page.
 
 Enter the robot's latest discovered address in **Robot IP**, then click
@@ -213,6 +213,73 @@ The `/api/vision` endpoints use the same `X-Control-Token` as the existing APIs:
 Stopping vision sampling only stops scene analysis; the controls' STOP still
 disarms the robot. Live images are processed in memory and are not saved.
 
+## AI camera control
+
+On the controls page, **AI camera control** uses the live robot camera and your
+goal to choose actions through OpenAI function calling. It shares the existing
+robot connection and manual controller; no second WebRTC client is opened.
+
+1. Restart the Python server with the explicit `--app-dir` command above and
+   reload the controls tab. Connect the robot and wait for the camera.
+2. Enter your OpenAI API key in the AI panel and click **Save key for this session**.
+   The key stays in server memory, is shared with scene counting, and is cleared
+   from the password field after submission. `OPENAI_API_KEY` also works.
+3. Enter a goal, for example **Wave once when a person is in front of you, then stop.**
+   Click **Start AI** while the robot is disarmed and this tab owns controls.
+4. Keep the tab focused. The panel displays each tool, its arguments and reason,
+   and the result. **Stop AI**, the main **STOP** button, or Space cancels the run.
+
+Starting AI sends your goal and fresh camera JPEGs to OpenAI. This mode can move
+the real robot; a monocular image cannot measure clearance or provide reliable
+obstacle avoidance. Local object boxes alone do not need OpenAI. The firmware's
+**Switch to AI** motion mode is separate from this camera agent.
+
+The loop is **fresh frame → one model tool call → validated action → new frame**.
+Tool results say whether commands were accepted; they do not prove that the
+physical action succeeded. The next image lets the model assess the outcome.
+The server provides:
+
+- `move_robot`: forward, turn left, or turn right, 0.1–1 second at 0.1–0.3 joystick
+  input, then zero input. This is not a distance or calibrated speed command.
+- `set_posture`: stand, balance, or lie down.
+- `perform_trick`: hello, stretch, heart, content, scrape, wiggle hips, sit,
+  rise from sit, dance 1 or 2. Existing motion-mode restrictions still apply.
+- `wait`: stay stopped for 0.2–2 seconds, then check a new frame.
+- `finish`: stop the run and explain completion or why it cannot continue.
+
+Runs stop after at most **6 decisions**, with a **120-second execution limit**.
+The server rejects malformed arguments, unlisted tools, flips/jumps/held poses,
+multiple calls in one response, stale decisions, and refused robot commands.
+Camera frames must be under 2 seconds old; decisions must be under 8 seconds old
+when the requested motion starts, including time spent preparing the stance.
+Slow model responses may therefore stop a run without performing its action.
+
+STOP, tab/focus loss, dashboard heartbeat loss, a stale camera, connection changes,
+or manual input cancels AI. A delayed provider reply cannot restart motion.
+Reconnect never resumes AI. A pending provider request may keep **Start AI**
+disabled until its response/timeout is discarded; manual controls remain usable.
+The first drive key during AI cancels it; release and press again for manual drive.
+Space can be typed in the goal field while stopped; it becomes STOP there during AI.
+
+AI actions use the existing stance recovery before motion, but AI gestures do
+**not** schedule the manual trick controller's automatic rearm. They wait for
+their configured duration before another camera decision. AI ends disarmed;
+the next manual drive press recovers as needed. STOP cancels subsequent commands
+and sends zero joystick input; a firmware trick already accepted may still finish.
+
+The implementation uses the [OpenAI Responses function-calling API](https://developers.openai.com/api/docs/guides/function-calling/)
+with strict schemas, one tool per decision, and `store: false`. The default model
+is `gpt-4.1-mini`; `OPENAI_CONTROL_MODEL` can select another model supporting images
+and Responses function calling. The key is never sent to the robot or echoed in
+API responses. Camera images are processed in memory and not saved by this app.
+
+Authenticated endpoints: `GET /api/ai/status`, `POST /api/ai/key`, and
+`POST /api/ai/start`. Starting requires this tab's WebSocket `control_id`, the
+current `stop_epoch` as `control_epoch`, a unique `run_id`, and `goal`. It cannot
+start from a rejected second tab or replay a start request from before STOP.
+Use the existing `POST /api/stop` to cancel. Add future tools to `ai_agent.py`
+and implement their validated actuator behavior in `app.py:execute_ai`.
+
 ## Offline checks
 
 ```sh
@@ -222,4 +289,6 @@ node --test robot/tests/*.test.cjs
 
 Tests use fake robot/camera/provider transports and do not move hardware or
 call OpenAI. They cover the existing controls plus detection, camera session
-invalidation, scene counting, authentication and the combined dashboard.
+invalidation, scene counting, AI tool validation, bounded motion, cancellation
+races, authentication and the combined dashboard. Live OpenAI decisions and
+physical behavior still require verification with your robot and API key.
