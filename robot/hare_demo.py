@@ -107,12 +107,12 @@ class HareDemo:
             if p._after_speech == 'await_gentle':
                 return 'Show gentle touch. G records it now; HARE responds after this sentence.'
             if p._after_speech == 'await_apology':
-                return 'When HARE finishes speaking, say “sorry, HARE” or type sorry in the answer fallback.'
+                return 'When HARE finishes speaking, say “sorry, HARE” or press “I apologized”.'
             return 'Wait for HARE to finish speaking. The next available cue will light up.'
         if p.phase == 'await_bump':
             return 'Show a clear camera view, then cover it briefly for the bump cue, or press B.'
         if p.phase == 'await_apology':
-            return 'Say “sorry, HARE” or type sorry in the answer fallback. Then HARE will ask for soft hands.'
+            return 'Say “sorry, HARE” or press “I apologized”. Then HARE will ask for soft hands.'
         if p.phase == 'await_gentle':
             return 'Show gentle touch, then press G to confirm it.'
         if p.phase in ANSWER_PHASES:

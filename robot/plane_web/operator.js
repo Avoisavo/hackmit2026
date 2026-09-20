@@ -89,10 +89,12 @@ function renderRelevantControls(state) {
   $('#demoControlsHint').textContent = view?.hint || '';
   $('#movementPlan').textContent = (view?.plan || 'Movements follow the lesson.') + ' STOP / Space cancels the sequence.';
   const care = selectedDemo === 'soft_hands';
+  $('#answerLabel').hidden = care;
   $('#answerLabel').textContent = care ? 'Apology fallback' : 'Maths answer fallback';
-  $('#answerHint').textContent = care ? 'If the microphone misses it, type sorry after HARE asks for an apology.' : 'If the microphone misses it, type the learner’s number when HARE asks.';
+  $('#answerHint').textContent = care ? 'After HARE asks for an apology, press the button to confirm “Sorry, HARE”.' : 'If the microphone misses it, type the learner’s number when HARE asks.';
+  $('#answer').hidden = care;
   $('#answer').placeholder = care ? 'Sorry, HARE' : 'Learner’s number, e.g. one';
-  $('#sendAnswer').textContent = care ? 'Submit apology' : 'Submit answer';
+  $('#sendAnswer').textContent = care ? 'I apologized' : 'Submit answer';
   $('#outcome').hidden = !view && !legacy;
   return selectedDemo === state.demo?.name;
 }
@@ -220,9 +222,10 @@ $('#activityForm').onsubmit = async event => {
 };
 $('#answerForm').onsubmit = async event => {
   event.preventDefault();
+  if ($('#sendAnswer').disabled) return;
   try {
     render(await request('/plane/answer', {session_id: activity.session_id, question_id: activity.question_id,
-      event_id: crypto.randomUUID(), text: $('#answer').value.trim()}));
+      event_id: crypto.randomUUID(), text: activity.demo?.name === 'soft_hands' ? 'Sorry, HARE' : $('#answer').value.trim()}));
     $('#answer').value = '';
   } catch (error) { report(error); }
 };

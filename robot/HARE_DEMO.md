@@ -96,8 +96,9 @@ HARE waits for an apology, then says:
 - **“Thank you for saying sorry! That was kind. We're a team!”**
 - **“Ready for gentle paws? Show me your soft hands.”**
 
-If the mic misses the apology, type **sorry** in **Demo 3 controls → Apology
-fallback**. Caption rehearsal uses this same typed fallback.
+If the mic misses the apology, press **I apologized** in **Demo 3 controls**.
+It submits **“Sorry, HARE”** automatically; no typing is needed. The button becomes
+available after HARE asks for an apology. Caption rehearsal uses this same button.
 
 After the gentle touch, press **G**. HARE says **“Lovely soft hands! Thank you for being gentle with me.”** Gentle
 touch remains a presenter event; there is no touch or force sensor. **B** remains

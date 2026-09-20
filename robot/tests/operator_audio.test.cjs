@@ -72,7 +72,8 @@ test('the selected demo shows only its controls, metrics and options while STOP 
     assert.equal(f.nodes['#careControls'].hidden,!care);
     assert.equal(f.nodes['#manualOverrides'].hidden,false);
     assert.equal(f.nodes['#stopAll'].hidden,false);
-    assert.equal(f.nodes['#sendAnswer'].textContent,care?'Submit apology':'Submit answer');
+    assert.equal(f.nodes['#sendAnswer'].textContent,care?'I apologized':'Submit answer');
+    assert.equal(f.nodes['#answer'].hidden,care);
     for(const node of f.scoped.filter(n=>n.dataset.trick)){
       assert.equal(node.hidden,!node.dataset.forDemo.split(' ').includes(name));
     }
@@ -106,16 +107,20 @@ test('selecting a demo updates its controls during audio preparation and closes 
   assert.equal(f.nodes['#setupPanel'].open,false);
   gate.resolve();await pending;
 });
-test('Demo 3 apology enables typed fallback and displays care progress instead of maths grading',async()=>{
+test('Demo 3 apology button sends the default apology without typing and follows the current step',async()=>{
   const f=await fixture();
   f.state.running=true;f.state.phase='await_apology';
   f.state.demo={name:'soft_hands',apology_received:false};f.render(f.state);
   assert.equal(f.nodes['#sendAnswer'].disabled,false);
+  assert.equal(f.nodes['#answer'].hidden,true);
+  assert.equal(f.nodes['#sendAnswer'].textContent,'I apologized');
   assert.match(f.nodes['#outcome'].textContent,/Say “sorry”/);
-  f.nodes['#answer'].value='sorry';await f.nodes['#answerForm'].onsubmit({preventDefault(){}});
-  assert.equal(f.calls.find(c=>c.path==='/plane/answer').payload.text,'sorry');
+  f.nodes['#answer'].value='';await f.nodes['#answerForm'].onsubmit({preventDefault(){}});
+  assert.equal(f.calls.find(c=>c.path==='/plane/answer').payload.text,'Sorry, HARE');
   f.state.phase='speaking';f.state.demo.apology_received=true;f.render(f.state);
   assert.equal(f.nodes['#sendAnswer'].disabled,true);
+  await f.nodes['#answerForm'].onsubmit({preventDefault(){}});
+  assert.equal(f.calls.filter(c=>c.path==='/plane/answer').length,1);
   assert.match(f.nodes['#outcome'].textContent,/Apology received/);
 });
 test('Demo 3 click prepares both audio devices and waits for microphone readiness before starting',async()=>{
