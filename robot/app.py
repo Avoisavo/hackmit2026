@@ -7,6 +7,7 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
+from itertools import count
 from pathlib import Path
 
 import requests
@@ -66,38 +67,116 @@ ROBOT_IP = os.getenv("ROBOT_IP", "172.20.10.4")
 TOKEN = secrets.token_urlsafe(32)
 CAMERA_WIDTH = 960
 CAMERA_FPS = 15
+SETTLE = 3.0  # seconds a posture change gets before the next command (dimOS uses 3)
+SPORT_REPLY_TIMEOUT = 10
+TRICK_REPLY_GRACE = 5
+request_ids = count(secrets.randbelow(1 << 30) + 1)
 
 # Posture buttons. These api_ids are identical in both motion modes.
 POSTURES = {"stand": "StandUp", "balance": "BalanceStand", "lie": "StandDown"}
 
 # Tricks: name -> (SPORT_CMD key in "normal" mode, SPORT_CMD_MCF key in ai/mcf
-# mode). None means the robot has no such move in that mode.
+# mode, takes an on/off flag). Flagged commands are poses the robot holds
+# until sent {"data": false}; the others are one-shot. Flag convention from
+# unitree_sdk2's SportClient (HandStand/WalkUpright/Pose send {"data": flag})
+# and dimOS (Standup 1050 with {"data": True}). None: no such move in that mode.
 ACTIONS = {
-    "hello": ("Hello", "Hello"),
-    "stretch": ("Stretch", "Stretch"),
-    "sit": ("Sit", "Sit"),
-    "rise_sit": ("RiseSit", "RiseSit"),
-    "heart": ("FingerHeart", "Heart"),
-    "content": ("Content", "Content"),
-    "scrape": ("Scrape", "Scrape"),
-    "wiggle_hips": ("WiggleHips", None),
-    "dance1": ("Dance1", "Dance1"),
-    "dance2": ("Dance2", "Dance2"),
-    "hind_stand": ("Standup", "BackStand"),
-    "handstand": ("Handstand", "HandStand"),
-    "front_jump": ("FrontJump", "FrontJump"),
-    "front_pounce": ("FrontPounce", "FrontPounce"),
-    "front_flip": ("FrontFlip", "FrontFlip"),
-    "back_flip": ("BackFlip", "BackFlip"),
-    "left_flip": ("LeftFlip", "LeftFlip"),
-    "right_flip": ("RightFlip", None),
-    "recovery": ("RecoveryStand", "RecoveryStand"),
-    "damp": ("Damp", "Damp"),
+    "hello": ("Hello", "Hello", False),
+    "stretch": ("Stretch", "Stretch", False),
+    "sit": ("Sit", "Sit", False),
+    "rise_sit": ("RiseSit", "RiseSit", False),
+    "heart": ("FingerHeart", "Heart", False),
+    "content": ("Content", "Content", False),
+    "scrape": ("Scrape", "Scrape", False),
+    "wiggle_hips": ("WiggleHips", None, False),
+    "dance1": ("Dance1", "Dance1", False),
+    "dance2": ("Dance2", "Dance2", False),
+    "hind_stand": ("Standup", "BackStand", True),
+    "handstand": ("Handstand", "HandStand", True),
+    "front_jump": ("FrontJump", "FrontJump", False),
+    "front_pounce": ("FrontPounce", "FrontPounce", False),
+    "front_flip": ("FrontFlip", "FrontFlip", False),
+    "back_flip": ("BackFlip", "BackFlip", False),
+    "left_flip": ("LeftFlip", "LeftFlip", False),
+    "right_flip": ("RightFlip", None, False),
+    "recovery": ("RecoveryStand", "RecoveryStand", False),
+    "damp": ("Damp", "Damp", False),
 }
 MOTION_MODES = ("normal", "ai", "mcf")
 
+# What the robot is left in after an accepted command. Everything else
+# (tricks, flips, dances) ends standing. Held poses are handled separately.
+STANCE_AFTER = {
+    "StandUp": "standing",
+    "RecoveryStand": "standing",
+    "RiseSit": "after_trick",   # walkable only after RecoveryStand, like a trick
+    "BalanceStand": "balanced",
+    "StandDown": "lying",
+    "Sit": "sitting",
+    "Damp": "damped",
+}
+HELD_POSES = {"Standup": "hind_stand", "BackStand": "hind_stand",
+              "Handstand": "handstand", "HandStand": "handstand"}
+
+# How to get back to standing from a stance the robot cannot act from:
+# (command name, on flag). Runs automatically before any other command.
+# After a one-shot trick the controller is left in a locked stand where the
+# joystick only tilts the body; RecoveryStand puts it back into a stand the
+# joystick can walk from (observed on this robot).
+RECOVERY = {
+    "sitting": ("rise_sit", True),
+    "lying": ("stand", True),
+    "damped": ("stand", True),
+    "unknown": ("stand", True),
+    "after_trick": ("recovery", True),
+    "hind_stand": ("hind_stand", False),
+    "handstand": ("handstand", False),
+}
+# Commands that are themselves a recovery and must never be preceded by one.
+DIRECT = {"rise_sit", "recovery", "damp"}
+
+# Every trick ends with an automatic RecoveryStand once it has had this many
+# seconds to finish, followed by BalanceStand and enabling movement.
+# Held poses are held this long, then ended, then recovered. Sit and
+# Damp leave through their own exit (RiseSit / StandUp) before RecoveryStand.
+AUTO_RECOVER_AFTER = {
+    "hello": 5, "stretch": 8, "heart": 5, "content": 5, "scrape": 5,
+    "wiggle_hips": 6, "dance1": 15, "dance2": 20,
+    "front_jump": 4, "front_pounce": 4,
+    "front_flip": 5, "back_flip": 5, "left_flip": 5, "right_flip": 5,
+    "sit": 5, "rise_sit": 3, "damp": 4,
+    "hind_stand": 6, "handstand": 6,
+}
+ARM_WAIT = 60  # includes the trick, recovery pauses and robot replies
+
+# Status codes the robot puts in reply.data.header.status.code
+# (unitree_sdk2py rpc/internal.py and go2/sport/sport_api.py).
+STATUS_TEXT = {
+    0: "ok",
+    3001: "unknown error",
+    3102: "client send error",
+    3103: "API not registered",
+    3104: "request timed out inside the robot",
+    3105: "response mismatch",
+    3106: "client data error",
+    3107: "lease invalid",
+    3201: "server send error",
+    3202: "robot refused (internal error: usually not allowed from the "
+          "current posture, gait or mode)",
+    3203: "not implemented by the active motion controller (try the other "
+          "motion mode)",
+    3204: "invalid parameters for this command",
+    3205: "lease denied",
+    3206: "lease does not exist",
+    3207: "lease already exists",
+    4201: "sport service timed out",
+    4202: "sport service not initialised",
+}
+
 robot = None
 armed = False
+stance = "unknown"  # see STANCE_AFTER / RECOVERY
+recovery_needed = False  # an unconfirmed command must not skip RecoveryStand
 last_input = 0.0
 desired = (0.0, 0.0, 0.0)
 controller = None
@@ -107,6 +186,9 @@ motion_mode = ""
 latest_jpeg = b""
 frame_at = 0.0
 action_lock = asyncio.Lock()
+recovery_task = None  # scheduled automatic recovery after a trick
+command_seq = 0       # bumps on every accepted sport reply
+stop_epoch = 0        # prevents an interrupted operation from enabling movement
 
 
 def same_origin(ws: WebSocket) -> bool:
@@ -140,12 +222,27 @@ def send_velocity(forward=0.0, left=0.0, turn=0.0):
         )
 
 
-def stop():
-    global armed, desired, last_input
+def disarm():
+    global armed, desired
     armed = False
     desired = (0.0, 0.0, 0.0)
-    last_input = 0.0
     send_velocity()
+
+
+def stop():
+    global stop_epoch
+    stop_epoch += 1
+    cancel_scheduled_recovery()
+    disarm()
+
+
+def check_not_stopped(epoch):
+    if epoch != stop_epoch or not connected():
+        raise HTTPException(409, "Operation stopped; movement remains disabled")
+
+
+def recovering():
+    return recovery_task is not None and not recovery_task.done()
 
 
 async def watchdog():
@@ -154,7 +251,7 @@ async def watchdog():
         try:
             # Missing browser heartbeats disarm movement.
             if not connected() or (
-                armed and time.monotonic() - last_input > 0.3
+                (armed or recovering()) and time.monotonic() - last_input > 0.3
             ):
                 stop()
             else:
@@ -166,21 +263,38 @@ async def watchdog():
 
 
 async def disconnect():
-    global robot, motion_mode, latest_jpeg
+    global robot, motion_mode, latest_jpeg, stance
+    cancel_scheduled_recovery()
     stop()
     old, robot = robot, None
     motion_mode = ""
     latest_jpeg = b""
+    stance = "unknown"
     if old:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(old.disconnect(), timeout=5)
 
 
 async def request(topic, options, timeout=5):
-    return await asyncio.wait_for(
-        robot.datachannel.pub_sub.publish_request_new(topic, options),
-        timeout=timeout,
+    # SDK 2.2.0 leaves cancelled futures in its reply registry. A late reply
+    # then calls set_result() on a cancelled future and raises InvalidStateError.
+    # Keep the SDK task alive until we remove our uniquely identified callback;
+    # only then cancel it. This also handles STOP cancelling a recovery request.
+    pub_sub = robot.datachannel.pub_sub
+    resolver = pub_sub.future_resolver
+    request_id = next(request_ids)
+    pending = asyncio.create_task(
+        pub_sub.publish_request_new(topic, {**options, "id": request_id})
     )
+    try:
+        return await asyncio.wait_for(asyncio.shield(pending), timeout=timeout)
+    finally:
+        resolver.pending_callbacks.pop(request_id, None)
+        resolver.chunk_data_storage.pop(request_id, None)
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
 
 
 def reply_status(reply):
@@ -188,6 +302,12 @@ def reply_status(reply):
         return reply["data"]["header"]["status"]["code"]
     except (KeyError, TypeError):
         return None
+
+
+def status_text(code):
+    if code is None:
+        return "no status code in reply"
+    return STATUS_TEXT.get(code, f"unknown status {code}")
 
 
 async def check_mode():
@@ -202,15 +322,240 @@ async def check_mode():
     return motion_mode
 
 
-def sport_id(name):
-    normal_key, mcf_key = ACTIONS[name]
+def resolve(name, on=True):
+    """Map a posture/action name to (api_id, key, parameter) for the
+    active motion mode. Raises 404/409 like the endpoints used to."""
+    if name in POSTURES:
+        key = POSTURES[name]
+        return SPORT_CMD[key], key, None
+    if name not in ACTIONS:
+        raise HTTPException(404, "Unknown action")
+    normal_key, mcf_key, flag = ACTIONS[name]
     if motion_mode in ("", "normal"):
         key, table = normal_key, SPORT_CMD
     else:
         key, table = mcf_key, SPORT_CMD_MCF
     if key is None or key not in table:
-        return None, None
-    return table[key], key
+        other = "normal" if motion_mode not in ("", "normal") else "ai"
+        raise HTTPException(
+            409,
+            f"{name} is not in the {motion_mode or 'normal'} command table. "
+            f"Lie the robot down and click 'Switch to {other.capitalize()}' "
+            "to use it.",
+        )
+    return table[key], key, ({"data": on} if flag else None)
+
+
+def note_stance(key, parameter, code):
+    global stance, command_seq, recovery_needed
+    if code != 0:
+        return
+    command_seq += 1
+    if key in HELD_POSES:
+        on = bool(parameter and parameter.get("data"))
+        stance = HELD_POSES[key] if on else "after_trick"
+    else:
+        stance = STANCE_AFTER.get(key, "after_trick")
+    if key == "RecoveryStand":
+        recovery_needed = False
+
+
+def cancel_scheduled_recovery():
+    global recovery_task
+    if recovery_task and not recovery_task.done():
+        recovery_task.cancel()
+    recovery_task = None
+
+
+def schedule_recovery(delay):
+    global recovery_task
+    cancel_scheduled_recovery()
+    recovery_task = asyncio.create_task(
+        auto_recover(delay, command_seq, stop_epoch, controller)
+    )
+
+
+async def auto_recover(delay, seq, epoch, owner):
+    # Fires once a trick has had time to finish: leaves the pose the robot is
+    # in (RiseSit / StandUp / end a held pose) and always ends with
+    # RecoveryStand, BalanceStand, then movement enabled. A stop or newer
+    # command cancels the sequence; only the original live dashboard can drive.
+    global busy, last_error, armed
+    await asyncio.sleep(delay)
+    if (seq != command_seq or epoch != stop_epoch or not connected()
+            or action_lock.locked()):
+        return
+    async with action_lock:
+        busy = True
+        disarm()
+        try:
+            steps = await recover_to_standing("automatic recovery", epoch)
+            if not any(s["command"].startswith("RecoveryStand") for s in steps):
+                await recovery_stand("automatic recovery", epoch)
+            check_not_stopped(epoch)
+            await prepare_stance(epoch)
+            check_not_stopped(epoch)
+            if (owner is not None and controller is owner
+                    and time.monotonic() - last_input <= 0.3):
+                armed = True
+        except HTTPException as exc:
+            last_error = str(exc.detail)
+        finally:
+            busy = False
+
+
+async def send_sport(key, api_id, parameter, label, timeout=None):
+    """One SPORT_MOD request. Caller holds action_lock. Returns the result
+    dict; raises 504 on no reply."""
+    global last_error, stance, recovery_needed
+    if timeout is None:
+        timeout = SPORT_REPLY_TIMEOUT
+    options = {"api_id": api_id}
+    if parameter is not None:
+        options["parameter"] = parameter
+    try:
+        reply = await request(RTC_TOPIC["SPORT_MOD"], options, timeout=timeout)
+    except asyncio.TimeoutError:
+        # Keep the session so the operator can still send Lie down / STOP.
+        # The robot may or may not have moved, so forget what we knew.
+        stance = "unknown"
+        recovery_needed = True
+        last_error = (
+            f"{label}: no reply within {timeout:g}s. Movement stays disabled. "
+            "Once the robot has finished, press a drive key or Enable movement "
+            "to recover; the trick will not be repeated."
+        )
+        raise HTTPException(504, last_error)
+    except asyncio.CancelledError:
+        stance = "unknown"
+        recovery_needed = True
+        raise
+    code = reply_status(reply)
+    if code is None:
+        stance = "unknown"
+        recovery_needed = True
+    note_stance(key, parameter, code)
+    return {
+        "command": label,
+        "api_id": api_id,
+        "parameter": parameter,
+        "status_code": code,
+        "status_text": status_text(code),
+        "reply": reply,
+    }
+
+
+async def recovery_stand(for_label, epoch):
+    global last_error
+    check_not_stopped(epoch)
+    api_id, key, parameter = resolve("recovery")
+    step = await send_sport(
+        key, api_id, parameter, f"RecoveryStand ({for_label})"
+    )
+    if step["status_code"] != 0:
+        last_error = f"RecoveryStand refused: {step['status_text']}"
+        raise HTTPException(409, last_error)
+    await asyncio.sleep(SETTLE)
+    check_not_stopped(epoch)
+    return step
+
+
+async def recover_to_standing(for_label, epoch):
+    """If the robot is sitting, lying, damped or in a held pose, bring it
+    back to standing first (Rise from sit / Stand up / end the pose), with a
+    settle pause. Caller holds action_lock. Returns the steps taken."""
+    global last_error
+    steps = []
+    for _ in range(3):
+        check_not_stopped(epoch)
+        if stance not in RECOVERY:
+            break
+        name, on = RECOVERY[stance]
+        api_id, key, parameter = resolve(name, on)
+        step = await send_sport(
+            key, api_id, parameter, f"{key} (preparing for {for_label})"
+        )
+        steps.append(step)
+        if step["status_code"] != 0:
+            last_error = (
+                f"{key} refused before {for_label}: {step['status_text']}"
+            )
+            raise HTTPException(409, last_error)
+        await asyncio.sleep(SETTLE)
+    check_not_stopped(epoch)
+    return steps
+
+
+async def run_command(name, on=True):
+    """Posture or trick, with automatic recovery to standing first."""
+    global busy, last_error
+    api_id, key, parameter = resolve(name, on)
+    label = key if parameter is None else f"{key} {'on' if on else 'off'}"
+    if not connected():
+        raise HTTPException(409, "Robot disconnected")
+    if action_lock.locked():
+        raise HTTPException(409, "Another operation is running")
+
+    async with action_lock:
+        busy = True
+        cancel_scheduled_recovery()
+        stop()
+        epoch = stop_epoch
+        try:
+            steps = []
+            if name not in DIRECT and on:
+                steps = await recover_to_standing(label, epoch)
+            check_not_stopped(epoch)
+            duration = AUTO_RECOVER_AFTER.get(name, 0) if on else SETTLE
+            timeout = max(SPORT_REPLY_TIMEOUT, duration + TRICK_REPLY_GRACE)
+            sent_at = time.monotonic()
+            result = await send_sport(key, api_id, parameter, label, timeout=timeout)
+            last_error = ""
+            after = None
+            if (name in AUTO_RECOVER_AFTER and result["status_code"] == 0
+                    and epoch == stop_epoch):
+                # Ending a held pose early still gets its RecoveryStand.
+                # A reply may arrive after the trick finishes. Count from the
+                # send time rather than waiting for the entire trick twice.
+                delay = max(0, duration - (time.monotonic() - sent_at))
+                schedule_recovery(delay)
+                after = (f"RecoveryStand in {delay:.1f}s, then BalanceStand "
+                         "and movement enabled")
+            result.update(
+                mode=motion_mode or "unknown",
+                stance=stance,
+                before=steps,
+                after=after,
+                note="Reply received; verify the robot actually moved",
+            )
+            return result
+        finally:
+            busy = False
+
+
+async def prepare_stance(epoch):
+    # Same sequence dimOS runs before it drives over WebRTC: StandUp,
+    # settle, BalanceStand. Joystick input only moves the robot in balance
+    # stand. From Sit / a held pose the matching recovery runs instead of
+    # StandUp. Caller holds action_lock.
+    global last_error
+    disarm()
+    steps = await recover_to_standing("driving", epoch)
+    if recovery_needed:
+        # A timed-out trick could still have run. StandUp alone does not clear
+        # its locked stance; require a confirmed RecoveryStand before driving.
+        steps.append(await recovery_stand("resuming after an unconfirmed command", epoch))
+    if stance != "balanced":
+        step = await send_sport(
+            "BalanceStand", SPORT_CMD["BalanceStand"], None, "BalanceStand"
+        )
+        steps.append(step)
+        if step["status_code"] != 0:
+            last_error = f"BalanceStand refused: {step['status_text']}"
+            raise HTTPException(409, last_error)
+    check_not_stopped(epoch)
+    last_error = ""
+    return steps
 
 
 def encode_jpeg(frame):
@@ -288,7 +633,9 @@ async def status():
         "connected": connected(),
         "armed": armed,
         "busy": busy,
+        "recovering": recovering(),
         "mode": motion_mode,
+        "stance": stance,
         "camera": bool(latest_jpeg) and time.monotonic() - frame_at < 2,
         "error": last_error,
     }
@@ -372,75 +719,70 @@ async def stop_api():
 
 @app.post("/api/arm")
 async def arm():
-    global armed, last_input
-    if not connected() or controller is None or busy:
+    global armed, last_input, busy
+    if not connected() or controller is None:
         raise HTTPException(409, "Connect robot and dashboard first")
-    armed = True
-    last_input = time.monotonic()
-    return {"armed": True}
-
-
-async def sport_command(api_id, label, timeout=5):
-    # Sends one SPORT_MOD request under the action lock with movement disarmed.
-    global busy, last_error
-    if not connected():
-        raise HTTPException(409, "Robot disconnected")
-    if action_lock.locked():
-        raise HTTPException(409, "Another operation is running")
-
-    async with action_lock:
-        busy = True
-        stop()
-        try:
-            reply = await request(
-                RTC_TOPIC["SPORT_MOD"], {"api_id": api_id}, timeout=timeout
-            )
-            last_error = ""
-            # An RPC reply is not proof of physical movement.
-            return {
-                "command": label,
-                "api_id": api_id,
-                "mode": motion_mode or "unknown",
-                "status_code": reply_status(reply),
-                "reply": reply,
-                "note": "Reply received; verify the robot actually moved",
-            }
-        except asyncio.TimeoutError:
-            # Keep the session so the operator can still send Lie down / STOP.
-            last_error = (
-                f"{label}: no reply within {timeout}s. Outcome unknown; "
-                "check the robot before retrying."
-            )
-            raise HTTPException(504, last_error)
-        finally:
-            busy = False
+    epoch, owner = stop_epoch, controller
+    # Wait for the whole trick and recovery, including the scheduled delay.
+    # Never cancel that delay or recover in the middle of a trick.
+    try:
+        async with asyncio.timeout(ARM_WAIT):
+            while True:
+                if recovering():
+                    pending = recovery_task
+                    try:
+                        await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        if pending.cancelled():
+                            raise HTTPException(409, "Automatic recovery stopped")
+                        raise
+                    check_not_stopped(epoch)
+                    if not armed:
+                        raise HTTPException(
+                            409, last_error or "Automatic recovery did not enable movement"
+                        )
+                async with action_lock:
+                    check_not_stopped(epoch)
+                    if controller is not owner:
+                        raise HTTPException(409, "Dashboard disconnected")
+                    # A command may have scheduled recovery while we waited.
+                    if recovering():
+                        continue
+                    busy = True
+                    try:
+                        steps = []
+                        if stance != "balanced":
+                            steps = await prepare_stance(epoch)
+                        check_not_stopped(epoch)
+                        if controller is not owner:
+                            raise HTTPException(409, "Dashboard disconnected")
+                        armed = True
+                        last_input = time.monotonic()
+                        return {"armed": True, "stance": stance,
+                                "before": steps or "already in balance stand"}
+                    finally:
+                        busy = False
+    except asyncio.TimeoutError:
+        raise HTTPException(409, "Another operation is still running")
 
 
 @app.post("/api/posture/{name}")
 async def posture(name: str):
     if name not in POSTURES:
         raise HTTPException(404, "Unknown posture")
-    key = POSTURES[name]
-    return await sport_command(SPORT_CMD[key], key)
+    return await run_command(name)
 
 
 @app.post("/api/action/{name}")
-async def action(name: str):
-    if name not in ACTIONS:
-        raise HTTPException(404, "Unknown action")
-    api_id, key = sport_id(name)
-    if api_id is None:
-        raise HTTPException(
-            409, f"{name} is not available in {motion_mode or 'normal'} mode"
-        )
-    return await sport_command(api_id, key)
+async def action(name: str, on: bool = True):
+    return await run_command(name, on)
 
 
 @app.post("/api/mode/{name}")
 async def set_mode(name: str):
     # Motion switcher api 1002 = SelectMode. The controller swap takes a few
     # seconds; dimOS waits 5 s after the same call.
-    global busy, last_error
+    global busy, last_error, stance
     if name not in MOTION_MODES:
         raise HTTPException(404, "Unknown motion mode")
     if not connected():
@@ -450,6 +792,8 @@ async def set_mode(name: str):
 
     async with action_lock:
         busy = True
+        cancel_scheduled_recovery()
+        stance = "unknown"
         stop()
         try:
             reply = await request(

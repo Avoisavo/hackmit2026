@@ -49,12 +49,11 @@
   .panel h2 { font-size: 16px; margin: 0 0 8px; }
   .panel p.small { font-size: 14px; color: #a9b4c8; margin: 6px 0; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-  input { width: 100%; }
 </style>
 
 <h1>Go2 Control</h1>
 <p id="status">Loading…</p>
-<p id="hint">Order: Connect robot → Stand up → Balance stand → Enable movement.</p>
+<p id="hint">Connect robot, then hold W/A/S/D/Q/E or a direction button. Movement enables itself (stand up, balance stand) the first time.</p>
 <p id="error"></p>
 
 <div class="panel">
@@ -68,16 +67,12 @@
 </div>
 
 <div class="panel">
-  <button onclick="api('/connect')">Connect robot</button>
-  <button onclick="api('/disconnect')">Disconnect</button>
+  <button onclick="command('/connect')">Connect robot</button>
+  <button onclick="command('/disconnect')">Disconnect</button>
   <button onclick="posture('stand')">Stand up</button>
   <button onclick="posture('balance')">Balance stand</button>
   <button onclick="posture('lie')">Lie down</button>
   <button id="arm" onclick="arm()">Enable movement</button>
-
-  <p>Joystick strength: <span id="strength">0.10</span></p>
-  <input id="speed" type="range" min="0.05" max="0.30"
-         step="0.05" value="0.10">
 
   <div class="pad">
     <button data-direction="left">Q · Strafe left</button>
@@ -90,14 +85,19 @@
 
   <button id="stop" onclick="halt('STOP pressed')">STOP / DISARM · Space</button>
   <p>Hold a button or key to move. Release to send zero input.
-     Any stop, posture button, trick, tab switch or loss of window focus
-     disarms; click Enable movement again to resume.</p>
+     Tricks pause driving, then recover and enable movement automatically.
+     STOP, posture buttons, tab switches and loss of window focus disarm;
+     the next key press enables movement again.</p>
 </div>
 
 <div class="panel">
   <h2>Tricks</h2>
-  <p class="small">Robot must be standing. Every trick disarms driving first.
-    Orange ones need at least 2 m of clear, flat space and ask for confirmation.</p>
+  <p class="small">Every trick pauses driving, then automatically runs Recovery
+    stand and Balance stand and enables WASD movement once it has finished.
+    STOP or leaving this window cancels the sequence. Orange ones need at
+    least 2 m of clear, flat space. Hind-leg stand and handstand are held for 6 s
+    then ended; the End buttons end them sooner. The yellow line shows the robot's
+    answer; a non-zero code means it refused.</p>
   <button onclick="action('hello')">Hello</button>
   <button onclick="action('stretch')">Stretch</button>
   <button onclick="action('heart')">Heart</button>
@@ -108,10 +108,11 @@
   <button onclick="action('rise_sit')">Rise from sit</button>
   <button onclick="action('dance1')">Dance 1</button>
   <button onclick="action('dance2')">Dance 2</button>
-  <button onclick="action('recovery')">Recovery stand</button>
   <br>
   <button class="risky" onclick="action('hind_stand', true)">Stand on hind legs</button>
+  <button onclick="action('hind_stand', false, false)">End hind-leg stand</button>
   <button class="risky" onclick="action('handstand', true)">Handstand</button>
+  <button onclick="action('handstand', false, false)">End handstand</button>
   <button class="risky" onclick="action('front_jump', true)">Jump forward</button>
   <button class="risky" onclick="action('front_pounce', true)">Pounce</button>
   <button class="risky" onclick="action('front_flip', true)">Front flip</button>
@@ -125,6 +126,7 @@
 
 <script>
 const token = "__TOKEN__";
+const speed = 0.30;
 const result = document.querySelector("#result");
 const hint = document.querySelector("#hint");
 const errorBox = document.querySelector("#error");
@@ -137,10 +139,13 @@ const keyMap = {
   KeyW: "forward", KeyS: "backward", KeyQ: "left", KeyE: "right",
   KeyA: "turnLeft", KeyD: "turnRight"
 };
-const DISARMED_HINT =
-  'Movement is disabled. Click "Enable movement" (robot must be in Balance stand), then hold a key or button.';
 let enabled = false;
-let armEpoch = 0;   // bumps on every arm() so a stale status poll cannot undo it
+let armEpoch = 0;   // invalidates status polls across movement state changes
+let arming = null;  // in-flight arm() promise, so key repeat cannot stack requests
+let armFailedAt = 0;
+let haltCount = 0;  // a halt during the multi-second arm sequence must win
+let commandInFlight = false;
+let autoEnable = false;  // a successful trick may enable movement after recovery
 let camConnected = false;
 let socket = new WebSocket(
   `ws://${location.host}/ws/control?token=${encodeURIComponent(token)}`
@@ -165,7 +170,17 @@ async function api(path) {
     });
     const body = await response.json();
     result.textContent = JSON.stringify(body, null, 2);
-    return response.ok;
+    if ("status_code" in body) {
+      const before = Array.isArray(body.before) && body.before.length
+        ? ` (after ${body.before.map(s => s.command.split(" (")[0]).join(", ")})` : "";
+      const after = body.after ? ` Then ${body.after} so the joystick can walk again.` : "";
+      note(body.status_code === 0
+        ? `${body.command}: accepted by the robot${before}.${after}`
+        : `${body.command}: robot answered ${body.status_code}, ${body.status_text}.`);
+    } else if (!response.ok && body.detail) {
+      note(body.detail);
+    }
+    return response.ok && (!("status_code" in body) || body.status_code === 0);
   } catch (error) {
     setEnabled(false);
     result.textContent = error.message;
@@ -179,39 +194,76 @@ function transmit(message) {
 }
 
 function halt(reason) {
+  haltCount++;
+  armEpoch++;
+  commandInFlight = false;
+  autoEnable = false;
   setEnabled(false);
   transmit({type: "stop"});
   api("/stop");
-  note(`Disarmed (${reason}). Click "Enable movement" to drive again.`);
+  note(`Disarmed (${reason}). Press a drive key to enable movement again.`);
 }
 
-async function arm() {
-  held.clear();
+function arm() {
+  if (arming) return arming;
+  if (commandInFlight) return Promise.resolve(false);
   armEpoch++;
-  const ok = await api("/arm");
-  setEnabled(ok);
-  note(ok
-    ? "Movement enabled. Hold W/S, Q/E, A/D or a button. Space stops."
-    : "Could not enable movement: connect the robot first and keep this page open.");
+  const haltsBefore = haltCount;
+  note("Enabling movement… (waits for any running trick, recovers to a walkable stand if needed, then balance stand)");
+  arming = (async () => {
+    let ok = await api("/arm");
+    arming = null;
+    if (haltCount !== haltsBefore) {
+      // The server also cancels interrupted arm requests. Do not let an old
+      // response overwrite a newer command or its automatic recovery.
+      return false;
+    }
+    armEpoch++;
+    autoEnable = false;
+    setEnabled(ok);
+    if (ok) note("Movement enabled. Hold W/S, Q/E, A/D or a button. Space stops.");
+    else armFailedAt = Date.now();
+    return ok;
+  })();
+  return arming;
+}
+
+// Pressing a drive key or button while disarmed enables movement itself.
+function autoArm() {
+  if (enabled || arming || commandInFlight || autoEnable) return;
+  if (Date.now() - armFailedAt < 1500) return;  // do not hammer the server on key repeat
+  arm();
+}
+
+async function command(path) {
+  const operation = ++haltCount;
+  armEpoch++;
+  commandInFlight = true;
+  autoEnable = false;
+  setEnabled(false);
+  // The command endpoint disarms on the server. Send zero input immediately;
+  // a separate asynchronous STOP could arrive after the trick and cancel it.
+  transmit({type: "move", forward: 0, left: 0, turn: 0});
+  const ok = await api(path);
+  if (haltCount === operation) {
+    armEpoch++;
+    commandInFlight = false;
+    autoEnable = ok && path.startsWith("/action/");
+  }
+  return ok;
 }
 
 function posture(name) {
-  halt("posture command");
-  api("/posture/" + name);
+  return command("/posture/" + name);
 }
 
-function action(name, risky) {
-  if (risky && !confirm(
-    `Run "${name.replace("_", " ")}"? Make sure there is clear, flat space around the robot.`
-  )) return;
-  halt("trick");
-  api("/action/" + name);
+function action(name, risky, on = true) {
+  return command("/action/" + name + (on ? "" : "?on=false"));
 }
 
 function mode(name) {
-  halt("mode switch");
   note(`Switching motion mode to ${name}; this takes a few seconds…`);
-  api("/mode/" + name);
+  return command("/mode/" + name);
 }
 
 function showCamera(on) {
@@ -225,15 +277,14 @@ cam.onerror = () => {
 };
 
 socket.onclose = event => {
+  haltCount++;
+  armEpoch++;
+  autoEnable = false;
+  commandInFlight = false;
   setEnabled(false);
   note(event.reason
     ? `Dashboard connection closed: ${event.reason}. Reload to reconnect.`
     : "Dashboard connection lost. Reload to reconnect.");
-};
-
-document.querySelector("#speed").oninput = event => {
-  document.querySelector("#strength").textContent =
-    Number(event.target.value).toFixed(2);
 };
 
 document.querySelectorAll("[data-direction]").forEach(button => {
@@ -242,9 +293,9 @@ document.querySelectorAll("[data-direction]").forEach(button => {
     // a native menu that would swallow the release.
     if (event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
-    if (!enabled) { note(DISARMED_HINT); return; }
     button.setPointerCapture(event.pointerId);
     held.add(button.dataset.direction);
+    autoArm();
   };
   button.oncontextmenu = event => event.preventDefault();
   const release = () => held.delete(button.dataset.direction);
@@ -262,9 +313,9 @@ window.addEventListener("keydown", event => {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   const direction = keyMap[event.code];
   if (!direction) return;
-  if (!enabled) { note(DISARMED_HINT); return; }
   event.preventDefault();
   held.add(direction);
+  autoArm();
 });
 window.addEventListener("keyup", event => {
   // macOS drops the keyup of a letter released while Cmd is held, so a
@@ -278,7 +329,6 @@ document.addEventListener("visibilitychange", () => {
 });
 
 setInterval(() => {
-  const speed = Number(document.querySelector("#speed").value);
   const axis = (positive, negative) =>
     enabled ? speed * (Number(held.has(positive)) - Number(held.has(negative))) : 0;
   transmit({
@@ -309,14 +359,28 @@ setInterval(async () => {
     document.querySelector("#status").textContent =
       `${state.ip} · ${state.connected ? "Connected" : "Disconnected"} · ` +
       `${state.armed ? "Movement enabled" : "Disarmed"}` +
+      `${state.connected ? " · " + (state.stance || "unknown").replace("_", " ") : ""}` +
       `${state.busy ? " · Busy" : ""}` +
       `${state.connected ? (state.camera ? " · Camera live" : " · Camera starting") : ""}`;
     modeName.textContent = state.mode || "unknown";
     if (state.connected !== camConnected) showCamera(state.connected);
-    // Ignore a poll that started before the latest arm() completed.
-    if (!state.armed && epoch === armEpoch && enabled) {
-      setEnabled(false);
-      note('The server disarmed movement (heartbeat gap or stop). Click "Enable movement" to resume.');
+    // Adopt automatic enabling only for this window's successful trick.
+    // STOP/blur and newer commands invalidate both that permission and old polls.
+    if (epoch === armEpoch && !arming && !commandInFlight) {
+      if (state.armed && !enabled && autoEnable &&
+          !document.hidden && document.hasFocus()) {
+        armEpoch++;
+        setEnabled(true);
+        autoEnable = false;
+        note("Recovery complete. Movement enabled. Hold W/S, Q/E, A/D or a button. Space stops.");
+      } else if (!state.armed && enabled) {
+        armEpoch++;
+        setEnabled(false);
+        note('The server disarmed movement (heartbeat gap or stop). Press a drive key to resume.');
+      } else if (autoEnable && !state.armed && !state.recovering) {
+        autoEnable = false;
+        note(state.error || "Recovery stopped. Press a drive key to enable movement again.");
+      }
     }
     errorBox.textContent = state.error || "";
   } catch {
