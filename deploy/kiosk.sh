@@ -10,7 +10,25 @@ set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PORT="${PORT:-8080}"
-URL="${FACE_URL:-http://127.0.0.1:$PORT/twinkle}"
+# The rabbit face is the default display. Set FACE_URL to override, for
+# example FACE_URL=http://127.0.0.1:8080/twinkle for the old Twinkle panel.
+URL="${FACE_URL:-http://127.0.0.1:$PORT/?bare=1}"
+
+# Key-only sshd for the team, run as this user on a high port. The packaged
+# adbd on this board is wired to the USB gadget and cannot listen on TCP, and
+# enabling the system sshd needs a root password nobody has. This needs neither.
+SSHD_DIR="$HOME/.sshd"
+if [ -f "$SSHD_DIR/sshd_config" ] && ! pgrep -f "sshd -f $SSHD_DIR/sshd_config" >/dev/null 2>&1; then
+  setsid /usr/sbin/sshd -f "$SSHD_DIR/sshd_config" -E /tmp/sshd.log </dev/null >/dev/null 2>&1 &
+fi
+
+# Reverse tunnel out to a laptop, if one is configured. The phone hotspot
+# isolates its clients: the board can reach a laptop, but no laptop can reach
+# the board. So the board dials out and forwards its own ports back.
+# Configure with: echo 'user@laptop-ip' > ~/.sshd/tunnel-target
+if [ -f "$HOME/.sshd/tunnel-target" ] && ! pgrep -f "[r]everse-tunnel" >/dev/null 2>&1; then
+  setsid "$ROOT/deploy/reverse-tunnel.sh" >/tmp/tunnel.log 2>&1 </dev/null &
+fi
 
 health() { curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; }
 
@@ -39,34 +57,9 @@ if command -v unclutter >/dev/null 2>&1; then
   unclutter -idle 0 -root &
 fi
 
-# Panel fixes go here if the display needs forcing -- see DISPLAY.md.
-# xrandr --output DP-1 --mode "1024x600_60.00"
-# xrandr --output DP-1 --rotate left
-
-BROWSER=""
-for c in chromium chromium-browser google-chrome chrome; do
-  if command -v "$c" >/dev/null 2>&1; then BROWSER="$c"; break; fi
-done
-if [ -z "$BROWSER" ]; then
-  echo "no chromium found -- run: sudo apt install -y chromium" >&2
-  exit 1
-fi
-
-# Chromium remembers that it was killed rather than closed and shows a
-# "restore pages?" bubble over the dog's face on every boot. Forget it.
-PROF="$HOME/.config/chromium/Default/Preferences"
-if [ -f "$PROF" ]; then
-  sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' "$PROF" || true
-fi
-
-exec "$BROWSER" \
-  --kiosk \
-  --noerrdialogs \
-  --disable-infobars \
-  --disable-session-crashed-bubble \
-  --disable-features=TranslateUI \
-  --no-first-run \
-  --check-for-update-interval=31536000 \
-  --password-store=basic \
-  --autoplay-policy=no-user-gesture-required \
-  "$URL"
+# The browser is handed to display-watch.sh. X starts before the USB-C dongle is
+# detected, so launching chromium here would paint onto a screen that is not
+# there yet. The watcher waits for an output to appear, sets its mode, and
+# relaunches the face onto it -- and falls back to the virtual screen if the
+# board is running with no panel attached.
+exec "$ROOT/deploy/display-watch.sh"
