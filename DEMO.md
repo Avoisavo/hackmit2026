@@ -3,9 +3,11 @@
 **HARE** — Hands-on Adaptive Real-world Education.
 
 A robot companion that runs short physical learning games. It checks a real
-answer with a camera, and it changes the activity when a learner stalls.
+answer with a camera, and it changes the activity when a child stalls.
 
-Built with ADHD learners in mind. It does not diagnose anything.
+Made for preschoolers. It helps every young child, and helps most the children
+who find sitting still hardest, including children with ADHD.
+It does not diagnose anything.
 
 ---
 
@@ -67,7 +69,7 @@ count. Keep talking.
 
 **Proves:** HARE changes the shape of the lesson instead of pushing on.
 
-**Say first:** "Watch what happens when the learner stalls."
+**Say first:** "Watch what happens when the child stalls."
 
 | # | Action | Face |
 |---|---|---|
@@ -84,12 +86,12 @@ count. Keep talking.
 | 11 | HARE says: "Five. Same as five red blocks. Let's go back." | `Ready` |
 | 12 | Your teammate returns and finishes the block mission | `Celebrate` |
 
-**Say after:** "The learner never escaped the maths. The maths changed shape.
+**Say after:** "The child never escaped the maths. The maths changed shape.
 Blocks became hops."
 
 Say that line clearly. It is your strongest teaching point.
 
-**Safety:** HARE runs away. HARE never chases the learner.
+**Safety:** HARE runs away. HARE never chases the child.
 
 **Fallback:** No space to run? HARE hops in place. Keep steps 6 to 11.
 
@@ -99,7 +101,7 @@ Say that line clearly. It is your strongest teaching point.
 
 **Proves:** HARE teaches care without scolding.
 
-**Say first:** "HARE is a creature. The learner practises care on HARE."
+**Say first:** "HARE is a creature. The child practises care on HARE."
 
 | # | Action | Face |
 |---|---|---|
@@ -110,13 +112,13 @@ Say that line clearly. It is your strongest teaching point.
 | 5 | Your teammate touches HARE's ear gently | `Watching` |
 | 6 | HARE says: "Perfect. Soft hands." | `Celebrate` |
 
-**Say after:** "HARE shows the effect, then gives the learner a way to fix it
+**Say after:** "HARE shows the effect, then gives the child a way to fix it
 at once."
 
 **Safety:** Use your own teammate. Never invite a judge to bump the robot.
 
 **Note:** The face pack has no angry face and no sad face. That is deliberate.
-HARE never scolds a learner.
+HARE never scolds a child.
 
 ---
 
@@ -124,12 +126,13 @@ HARE never scolds a learner.
 
 1. Show the dashboard slide:
 
-   > "Learner walked away → HARE switched to hop-counting. Same lesson, new shape."
+   > "Child walked away → HARE switched to hop-counting. Same lesson, new shape."
 
 2. Say the key line:
 
-   > "HARE is built with ADHD learners in mind. It adapts the mission, not the
-   > learner. It does not diagnose anything."
+   > "HARE is made for preschoolers. It helps every child, and helps most the
+   > ones who find sitting still hardest. It adapts the mission, not the child.
+   > It does not diagnose anything."
 
 3. Say the build line:
 
@@ -161,10 +164,10 @@ Say it correctly or a judge will stop you.
 |---|---|
 | "HARE detects when a child hurts an animal" | "HARE teaches soft hands and asking first" |
 | "HARE corrects bad behaviour" | "HARE turns rough contact into the next mission" |
-| "HARE teaches ethics" | "HARE models gentle care. The learner practises on HARE" |
-| "HARE feels pain" | "HARE's ears wobble, so the learner sees the effect" |
-| "HARE measures attention" | "HARE asks the learner what they need" |
-| "HARE detects ADHD" | "HARE is built with ADHD learners in mind" |
+| "HARE teaches ethics" | "HARE models gentle care. The child practises on HARE" |
+| "HARE feels pain" | "HARE's ears wobble, so the child sees the effect" |
+| "HARE measures attention" | "HARE asks the child what they need" |
+| "HARE detects ADHD" | "HARE is for preschoolers, and helps most those who find sitting still hardest" |
 
 You cannot detect cruelty or attention with a camera. Do not claim it.
 
@@ -217,7 +220,7 @@ curl -X POST $BOARD/emote -d '{"name":"Ready","hold":0}'
 Rehearse these three lines. They carry the pitch with no hardware at all.
 
 1. **It sees.** HARE checks a real answer with a camera.
-2. **It moves.** HARE turns blocks into hops when the learner stalls.
+2. **It moves.** HARE turns blocks into hops when the child stalls.
 3. **It cares.** HARE teaches soft hands, and never scolds.
 
 ---

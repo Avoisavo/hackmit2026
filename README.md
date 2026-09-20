@@ -2,32 +2,49 @@
 
 **H**ands-on **A**daptive **R**eal-world **E**ducation.
 
-A robot companion that runs short physical learning games. It checks a real
-answer with a camera, and it changes the activity when a learner stalls.
+A learning companion for **preschoolers**. It runs short physical games, checks
+a real answer with a camera, and changes the activity when a child stalls.
 
-Built with ADHD learners in mind. **It does not diagnose anything.**
+It helps every young child. It helps most the children who find sitting still
+hardest, including children with ADHD. **It does not diagnose anything.**
 
 ---
 
 ## The problem
 
-Some learners struggle with long, seated lessons. A fixed lesson keeps going
-even when the learner needs help, a different challenge, or a break.
+Preschoolers do not learn well sitting still. Most three to five year olds
+cannot hold one seated task for long, and a fixed lesson keeps going anyway —
+when the child needs help, a different challenge, or a break.
 
-Screen-based tutors do not help here. They ask a learner who already finds
-sitting still hard to sit still and tap a screen.
+Screen-based tutors make this worse. They ask a child who already struggles to
+sit still to sit still and tap a screen.
+
+Some children find this far harder than others. Children with ADHD are the
+clearest example. They are not a separate problem — they are the edge of the
+same one.
 
 ## The solution
 
 HARE runs short physical missions with real objects on a mat. A camera checks
-the answer. When a learner stalls, HARE does not push on — it changes the shape
+the answer. When a child stalls, HARE does not push on — it changes the shape
 of the lesson. Blocks become hops.
 
-HARE **asks** the learner what they need. It offers a hint, more time, or a
+HARE **asks** the child what they need. It offers a hint, more time, or a
 movement mission. It never scores attention.
 
 That last point is the design rule. Looking away or moving does not reliably
-tell you whether someone is paying attention. So HARE does not guess. It asks.
+tell you whether a child is paying attention. So HARE does not guess. It asks.
+
+**Design for the edge, help everyone.** Build for the child who cannot sit
+still, and the lesson gets better for the whole class.
+
+### On ADHD, said correctly
+
+Doctors rarely diagnose ADHD before age six, so HARE never claims to find it.
+
+But for children aged four and five, published guidance puts behaviour-based
+support **first**, ahead of medicine. HARE is exactly that kind of support: a
+non-medical, play-based tool. That is the honest, and stronger, claim.
 
 ## Where the AI fits
 
@@ -76,16 +93,16 @@ Full script, with the face cue for every beat, is in **[DEMO.md](DEMO.md)**.
 | 2 | **Run, Play, Teach Again** | HARE changes the shape of the lesson | 60 s |
 | 3 | **Soft Hands** | HARE teaches care without scolding | 25 s |
 
-**1. Count and Check.** HARE asks for three blue blocks. The learner puts two.
-The camera counts two. HARE asks how many more are needed. The learner adds one.
+**1. Count and Check.** HARE asks for three blue blocks. The child puts two.
+The camera counts two. HARE asks how many more are needed. The child adds one.
 HARE hops, and the screen shows `2 + 1 = 3`.
 
-**2. Run, Play, Teach Again.** The learner stalls and walks away. HARE does not
+**2. Run, Play, Teach Again.** The child stalls and walks away. HARE does not
 nag. It hops away and says "Catch me!", then hops three times and asks the
-learner to count the hops. The maths never stopped — it changed shape. HARE runs
-away; HARE never chases the learner.
+child to count the hops. The maths never stopped — it changed shape. HARE runs
+away; HARE never chases the child.
 
-**3. Soft Hands.** The learner bumps HARE too hard. HARE says "Ouch, that was too
+**3. Soft Hands.** The child bumps HARE too hard. HARE says "Ouch, that was too
 hard. Softer, please. Other people and animals feel pain too. Show me soft hands
 now." Then it praises the gentle touch. HARE never scolds, and it fixes the
 behaviour now rather than asking for a promise about next time.
@@ -95,9 +112,9 @@ behaviour now rather than asking for a promise about next time.
 | Do not say | Say instead |
 |---|---|
 | "HARE detects when a child hurts an animal" | "HARE teaches soft hands and asking first" |
-| "HARE measures attention" | "HARE asks the learner what they need" |
-| "HARE detects ADHD" | "HARE is built with ADHD learners in mind" |
-| "HARE feels pain" | "HARE's ears wobble, so the learner sees the effect" |
+| "HARE measures attention" | "HARE asks the child what they need" |
+| "HARE detects ADHD" | "HARE is for preschoolers, and helps most those who find sitting still hardest" |
+| "HARE feels pain" | "HARE's ears wobble, so the child sees the effect" |
 
 You cannot detect cruelty or attention with a camera. Do not claim it.
 
