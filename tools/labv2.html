@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f6f1e8"><meta name="description" content="Twinkle's gentle expression pack. A learning companion, one small discovery at a time.">
+<title>Twinkle — face lab v2</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='20' fill='%23f6cb94'/%3E%3Cpath d='M19 23v9m26-9v9M26 42q6 7 12 0' stroke='%23272b32' stroke-width='6' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/labv2.css">
+</head>
+<body>
+<header class="masthead"><a class="brand" href="/labv2"><span aria-hidden="true" class="brand-star">✳</span>twinkle<span class="brand-divider">/</span><span class="brand-note">face lab v2</span></a><nav aria-label="Lab navigation"><a href="/lab">Previous study ↗</a><span class="draft">A WORKING DRAFT</span></nav></header>
+<main>
+<section class="intro"><div><p class="eyebrow">A little companion for big discoveries</p><h1>Learning feels better<br>with a friend<span>.</span></h1></div><p class="intro-note">A little shine. A curious little soul.<br>Meet Twinkle’s eight expressions,<br>made for the moments between answers.</p></section>
+<section class="workspace" aria-label="Twinkle expression studio">
+<div class="preview-column">
+<div class="stage" id="stage"><div class="stage-meta"><span><i></i> TWINKLE / FACE STUDY</span><span id="stage-name">01 — Ready</span></div><canvas id="twinkle" role="img" aria-label="Twinkle — Ready"></canvas><div id="display-equation" class="display-equation" hidden aria-label="Two plus one equals three">2 + 1 = 3</div><div class="stage-bottom"><span>On your side. At your pace.</span><button id="fullscreen">Face only ↗</button></div></div>
+<div class="caption"><span id="feeling-name">Ready</span><p id="feeling-description">Two soft, open lights. Ready whenever you are.</p></div>
+<div class="preview-options"><label><input type="checkbox" id="motion" checked> Gentle motion</label><label><input type="checkbox" id="distance"> Small-screen check</label><a id="panel-link" href="/labv2?panel=1&emote=Ready" target="_blank" rel="noopener">Open display ↗</a></div>
+</div>
+<aside class="story-panel" aria-label="Blue-block story">
+<div class="story-top"><span class="eyebrow">Try the main demo</span><span class="story-length">2 + 1 = 3</span></div><h2>One more blue block.</h2><p class="story-intro">A small discovery, together. Step through the story or let Twinkle show you.</p>
+<div class="story-steps" id="story-steps" aria-label="Story scenes"></div>
+<div class="scene-copy" aria-live="polite"><span id="scene-event">Session starts</span><p id="scene-line">“Can you put three blue blocks on the mat?”</p></div>
+<div class="block-mat" id="block-mat" role="img" aria-label="Three blue blocks to find"></div>
+<div class="help-choices" id="help-choices" hidden><p>What would you like to try?</p><div><button data-help="hint">A little hint</button><button data-help="time">More time</button><button data-help="move">Let’s move</button></div></div>
+<div class="story-actions"><button class="primary" id="play-story">Play story <span aria-hidden="true">▶</span></button><button class="secondary" id="next-scene">Next moment →</button></div>
+<div class="scenario-shortcuts"><button id="take-break">Take a break</button><button id="ask-help">Ask for help</button><button id="blocked-view">Mat out of view</button></div>
+<p id="story-status" class="story-status" aria-live="polite">Preview only · no camera or robot connected.</p>
+</aside>
+</section>
+<section class="pack" aria-labelledby="pack-heading"><div class="section-heading"><div><p class="eyebrow">Two lights. Eight clear signals.</p><h2 id="pack-heading">A face for every little moment.</h2></div><span class="key-hint">EXPLORE THE PACK · KEYS 1–8</span></div><div id="face-pack" class="face-pack"></div></section>
+<section class="principles" aria-label="Character principles"><p><span>01 / A companion</span>Respond to the moment.<br>Never judge the child.</p><p><span>02 / Room to try</span>A little encouragement.<br>A big celebration.</p><p><span>03 / Room to rest</span>Breaks belong here, too.<br>Twinkle can wait.</p></section>
+<footer><span>TWINKLE / KINDERGARTEN COMPANION</span><span>Face language draft · local preview</span><a href="/labv2?panel=1&emote=Ready" target="_blank" rel="noopener">Made for a little screen ↗</a></footer>
+</main>
+<script src="/twinkle.js"></script><script src="/labv2.js"></script>
+</body>
+</html>

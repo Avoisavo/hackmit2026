@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>emote gallery</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #07080C;
+    color: #FFC24B;
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    padding: 28px;
+  }
+  header { display: flex; align-items: baseline; gap: 18px; margin-bottom: 22px; }
+  h1 { font-size: 13px; letter-spacing: .2em; text-transform: uppercase; opacity: .6; font-weight: normal; }
+  label { opacity: .55; cursor: pointer; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 18px; }
+  figure { border: 1px solid rgba(255,194,75,.14); border-radius: 12px; overflow: hidden; background: #0A0B10; }
+  canvas { display: block; width: 100%; aspect-ratio: 1000 / 600; }
+  figcaption { padding: 8px 12px; border-top: 1px solid rgba(255,194,75,.12); opacity: .7; }
+  figcaption kbd { float: right; opacity: .4; font: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <h1>emote gallery</h1>
+  <label><input type="checkbox" id="idle"> idle behaviour (blink, saccade, breathe)</label>
+</header>
+<div class="grid" id="grid"></div>
+
+<script src="/face.js"></script>
+<script>
+/* Every emote at once, so poses can be tuned side by side instead of by
+ * flipping between them one at a time. */
+(function () {
+  var grid = document.getElementById('grid');
+  var idleBox = document.getElementById('idle');
+  var faces = [];
+
+  function build(idle) {
+    faces.forEach(function (f) { f.stop(); });
+    faces = [];
+    grid.innerHTML = '';
+
+    Face.NAMES.forEach(function (name, i) {
+      var fig = document.createElement('figure');
+      var cv = document.createElement('canvas');
+      var cap = document.createElement('figcaption');
+      cap.innerHTML = name + '<kbd>' + ((i + 1) % 10) + '</kbd>';
+      fig.appendChild(cv);
+      fig.appendChild(cap);
+      grid.appendChild(fig);
+
+      var f = new Face(cv, { idle: idle, emote: name });
+      f.start();
+      faces.push(f);
+    });
+  }
+
+  idleBox.addEventListener('change', function () { build(idleBox.checked); });
+  build(false);
+})();
+</script>
+</body>
+</html>
