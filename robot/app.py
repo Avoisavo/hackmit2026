@@ -26,14 +26,16 @@ from unitree_webrtc_connect.webrtc_driver import (
 from unitree_webrtc_connect.constants import RTC_TOPIC, SPORT_CMD, SPORT_CMD_MCF
 
 if __package__:
-    from .control_plane import ControlPlane, ROLES
+    from .control_plane import ROLES
+    from .hare_plane import HareControlPlane as ControlPlane
     from .go2_speaker import Go2Speaker
     from .ai_agent import CameraAgent, AgentError, validate_call, TOOLS, TRICKS
     from .box_service import BoxService
     from .connection_health import ConnectionSupervisor, guard_heartbeat
     from .vision_service import VisionService
 else:
-    from control_plane import ControlPlane, ROLES
+    from control_plane import ROLES
+    from hare_plane import HareControlPlane as ControlPlane
     from go2_speaker import Go2Speaker
     from ai_agent import CameraAgent, AgentError, validate_call, TOOLS, TRICKS
     from box_service import BoxService
@@ -312,11 +314,11 @@ async def watchdog():
             # Missing browser heartbeats disarm movement.
             if not connected():
                 # Offline microphone checks do not need a robot connection.
-                if armed or recovering() or ai.running or plane.running or speaker.playing:
+                if armed or recovering() or ai.running or plane.requires_robot or speaker.playing:
                     stop("Robot link unavailable")
             elif (armed or recovering() or ai.running or plane.running) and time.monotonic() - last_input > 0.3:
                 stop("Dashboard heartbeat missed; movement stopped")
-            elif (ai.running or plane.running) and (not latest_jpeg or time.monotonic() - frame_at >= 2):
+            elif (ai.running or plane.requires_camera) and (not latest_jpeg or time.monotonic() - frame_at >= 2):
                 stop("Camera became stale; AI stopped")
             else:
                 send_velocity(*(desired if armed else (0, 0, 0)))
@@ -757,6 +759,9 @@ async def execute_ai(name, args, context, check):
     global armed, desired, busy
     validate_call(name, args)
     check(decision=True)
+    if name in ("speak", "listen"):
+        disarm()
+        return await plane.call_audio(name, args, check)
     if name in ("wait", "finish"):
         disarm()
         if name == "wait":
@@ -838,10 +843,19 @@ def check_audio_test(context):
         raise HTTPException(409, "Audio test stopped because dashboard controls changed")
 
 
+async def demo_jump(check):
+    check()
+    reply = await run_command("front_jump", automatic_recovery=False, interrupt_ai=False, guard=check)
+    check()
+    if reply["status_code"] != 0:
+        raise HTTPException(409, "Go2 refused the forward jump")
+    await ai_wait(reply["remaining_seconds"], check)
+
+
 speaker = Go2Speaker(lambda: robot, connected)
 plane = ControlPlane(vision=vision, acquire=acquire_ai, check_context=check_ai_context,
                      stop_robot=stop, gesture=lesson_gesture, finish=finish_ai,
-                     audio_acquire=acquire_audio_test, audio_check=check_audio_test)
+                     audio_acquire=acquire_audio_test, audio_check=check_audio_test, demo_motion=demo_jump)
 app.include_router(plane.router)
 app.include_router(vision.router)
 app.add_middleware(
@@ -884,7 +898,7 @@ async def device_page(role: str):
 
 @app.get("/plane-assets/{name}")
 async def plane_asset(name: str):
-    if name not in ("operator.js", "device.js", "deepgram.js", "plane.css", "twinkle.js"):
+    if name not in ("operator.js", "device.js", "deepgram.js", "hare.js", "plane.css", "twinkle.js"):
         raise HTTPException(404, "Asset not found")
     return FileResponse(Path(__file__).with_name("plane_web") / name,
                         headers={"Cache-Control": "no-store"})
@@ -913,7 +927,9 @@ async def vision_page():
 @app.get("/api/ai/tools")
 async def tool_catalog():
     return {
-        "version": 1, "tools": TOOLS,
+        "version": 2, "tools": TOOLS,
+        "audio_dispatch": {"method": "POST", "path": "/api/plane/call", "tools": ["speak", "listen"], "result": "Poll /api/plane/status audio_tool; no robot or camera required, current focused control context required."},
+        "demos": {"start": "/api/plane/start", "events": "/api/plane/event", "names": ["count_check", "run_play", "soft_hands", "close", "backup"]},
         "dispatch": {"method": "POST", "path": "/api/ai/call",
             "authentication": "X-Control-Token (server/operator only)",
             "body": {"name": "move_robot", "arguments": {"direction": "forward", "seconds": 0.3, "speed": 0.15, "reason": "Visible clear space ahead"},

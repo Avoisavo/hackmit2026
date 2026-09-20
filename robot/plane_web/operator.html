@@ -1,13 +1,23 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Buddy · Control plane</title><link rel="stylesheet" href="/plane-assets/plane.css">
+<title>HARE · Control plane</title><link rel="stylesheet" href="/plane-assets/plane.css">
 <body data-token="__TOKEN__"><main>
-<header><div><p class="eyebrow">BUDDY / GO2 AIR + AUDIO · V3</p><h1>Control plane</h1><p class="muted">One activity. Voice, vision, expression, and robot working together.</p></div>
+<header><div><p class="eyebrow">HARE / GO2 AIR + AUDIO · V3 / DEMOS · V4</p><h1>Control plane</h1><p class="muted">One activity. Voice, vision, expression, and robot working together.</p></div>
 <div class="row"><a href="/controls">Advanced robot controls</a><button id="stopAll" class="danger">STOP ALL · Space</button></div></header>
 <p id="error" class="error" role="alert"></p>
 <div class="services"><div class="service"><b>GO2 + CAMERA</b><span id="robotHealth">Connecting dashboard…</span></div>
 <div class="service"><b>VOICE</b><span id="voiceHealth">Bluetooth speaker and microphone via Mac</span></div>
 <div class="service"><b>FACE DISPLAY</b><span id="faceHealth">Local preview ready</span></div></div>
+<section class="card hare-demo"><p class="eyebrow">HARE / LIVE DEMOS</p><h2>Same lesson. New shape.</h2>
+<p id="presenterCue" class="presenter-cue">Choose a demo. Speaker first, then microphone. Each demo has presenter fallback keys.</p>
+<div class="row"><button data-demo="count_check" class="primary">1 · Count and Check</button><button data-demo="run_play">2 · Run, Play, Teach Again</button><button data-demo="soft_hands">3 · Soft Hands</button><button data-demo="close">Closing slide</button><button data-demo="backup">Hardware backup</button></div>
+<div class="row"><label>Hop output <select id="demoMotion"><option value="screen">Screen hops · no space needed</option><option value="forward_jumps">Go2 forward jumps · tested action</option></select></label><label><input id="clearSpace" type="checkbox"> Clear path away from learner for every forward jump</label><label><input id="rehearsal" type="checkbox"> Caption rehearsal · no audio or robot required</label></div>
+<p class="muted">Go2 mode uses forward jumps, including up to six in Run, Play. It never follows or chases a person. Screen mode animates hops. STOP / Space or leaving this window cancels the sequence.</p>
+<div class="row"><label>Fallback block count <input id="fallbackCount" type="number" min="0" max="20" value="2"></label><button id="fallbackApply">F · Apply fallback count</button><button data-demo-event="learner_left">L · Learner walked away</button><button data-demo-event="bump">B · Hard-bump cue</button><button data-demo-event="gentle">G · Gentle-touch cue</button></div>
+<p class="muted">Fallback counts are labelled presenter input. B and G are presenter cues, not sensor readings. Use your teammate for Soft Hands; never invite a judge to bump the robot. Keys work outside text fields.</p>
+<p id="demoNote" class="muted"></p>
+<div id="hareDisplay" class="hare-display" hidden><div class="hare-ears"><i></i><i></i></div><strong data-hare-equation></strong><span data-hare-hops></span><small data-hare-source></small></div>
+</section>
 <section class="card tests"><div class="section-title"><div><p class="eyebrow">CHECK EACH COMPONENT</p><h2>Quick tests</h2></div><span class="badge">Sound output: computer / external speaker</span></div>
 <p class="muted">For the speaker test, pair Whammo 2.0 Speaker over Bluetooth and select it in Mac System Settings → Sound → Output. Enable this computer’s speaker below, then play the tone. Test the microphone afterward. The test tone needs no robot connection or API key. Speech needs your ElevenLabs key and voice ID; transcription needs Deepgram.</p>
 <div class="test-grid">
@@ -25,13 +35,13 @@
 <div class="grid"><div>
 <section class="card"><h2>Go2 camera</h2><form id="connectForm" class="row"><input id="robotIp" aria-label="Robot IP" value="__ROBOT_IP__" required><button>Connect robot</button><button id="disconnect" type="button">Disconnect</button></form>
 <p class="muted">Uses the existing Go2 connection. Camera analysis counts toy blocks; joystick driving stays disarmed during this activity.</p><img id="camera" alt="Connect Go2 to see the live camera"></section>
-<section class="card"><div id="activityPhase">Idle</div><h2>Build three together</h2>
+<section class="card"><div id="activityPhase">Idle</div><h2>Activity status</h2>
 <div class="counts"><div><strong id="goalCount">3</strong><span>Target blocks</span></div><div><strong id="seenCount">—</strong><span>Observed blocks</span></div></div>
 <p id="activityMessage" role="status">Enable a speaker and connect Go2, then start.</p>
-<form id="activityForm"><label>Target blocks <input id="target" type="number" min="1" max="10" value="3"></label>
+<details><summary>Original blocks activity</summary><form id="activityForm"><label>Target blocks <input id="target" type="number" min="1" max="10" value="3"></label>
 <label><input id="wave" type="checkbox"> Add one Go2 Hello gesture when the child succeeds</label>
 <p class="muted">The gesture uses the existing recovery sequence. Enable it only with room for the robot to stand and wave.</p>
-<button id="startActivity" class="primary">Start blocks activity</button></form>
+<button id="startActivity" class="primary">Start blocks activity</button></form></details>
 <details><summary>Operator answer fallback</summary><p class="muted">For checking the flow before a microphone joins. This sends a typed answer to the current question.</p>
 <form id="answerForm" class="row"><input id="answer" maxlength="300" placeholder="Child's answer" aria-label="Typed answer"><button id="sendAnswer">Submit answer</button></form></details></section>
 </div><div>
@@ -47,6 +57,8 @@
 <div class="pair-row"><button data-pair="speaker">Pair another speaker player</button><input id="speakerLink" readonly aria-label="Speaker pairing link"><p class="muted">Optional: open this link on the device connected to your speaker, then click Join device.</p></div>
 <div class="pair-row"><button data-pair="face">Pair Arduino / face display</button><input id="faceLink" readonly aria-label="Face pairing link"></div>
 </section>
+<section class="card"><h2>AI voice tools</h2><p class="muted">These use the same speak/listen functions available to the camera AI. Speaker and microphone tools work without the robot connected.</p><label>Test line <input id="toolSpeech" maxlength="400" value="Hello! I am HARE. Let's count together."></label><div class="row"><button id="toolSpeak">Call speak tool</button><button id="toolListen">Call listen tool · 10 s</button></div><p id="audioToolResult" role="status"></p>
+<details><summary>Camera AI goal</summary><form id="aiGoalForm"><label>Goal <input id="aiGoal" maxlength="500" value="Ask how many blue blocks are visible, listen to the answer, then check the camera and explain kindly. Stay still."></label><button>Start camera AI</button></form><p class="muted">Requires OpenAI, a connected Go2 camera, and this focused tab. The scripted demos above use deterministic lesson steps.</p></details></section>
 <section class="card" id="toolMap"><div class="section-title"><div><p class="eyebrow">AI ACTION REFERENCE</p><h2>Movement tool map</h2></div><button id="downloadTools">Download tool schemas</button></div>
 <p class="muted">These are the same tools used by camera AI. The server validates every call, executes one action at a time, and stops on lost focus or connection. Download JSON for OpenAI's Responses API tools field.</p>
 <div class="table-scroll"><table><thead><tr><th>Tool</th><th>Arguments</th><th>Behavior</th></tr></thead><tbody id="toolsTable"></tbody></table></div>

@@ -1,8 +1,8 @@
 """Presenter-assisted HARE demos: observed blocks, adaptive hop counting, and care.
 
 A fallback is always recorded as presenter evidence, never as camera evidence.
-Screen hops are available without hardware. Physical hop support is deliberately
-absent until a repeatable in-place motion has been validated on this Go2.
+Screen hops are available without hardware. The optional tested Go2 action is a
+forward jump; it is never represented as an in-place hop or a navigation skill.
 """
 import secrets
 from fastapi import HTTPException
@@ -15,7 +15,7 @@ DEMOS = {
     'soft_hands': {'title': 'Soft Hands', 'target': 0, 'color': '',
         'intro': 'HARE is a creature. The learner practises care on HARE.'},
     'close': {'title': 'Same lesson, new shape', 'target': 0, 'color': '',
-        'intro': 'HARE is built with ADHD learners in mind. It adapts the mission, not the learner. It does not diagnose anything.'},
+        'intro': 'HARE is built with ADHD learners in mind. It adapts the mission, not the learner. It does not diagnose anything. We built HARE with Devin and Codex, with ElevenLabs and Deepgram for voice.'},
     'backup': {'title': 'It sees. It moves. It cares.', 'target': 0, 'color': '',
         'intro': 'It sees: checks a real answer with a camera. It moves: turns blocks into hops. It cares: teaches soft hands, and never scolds.'},
 }
@@ -26,11 +26,12 @@ class HareDemo:
     STALL_SECONDS = 10
     HOP_SECONDS = 1.1
 
-    def __init__(self, plane, name, rehearsal=False):
+    def __init__(self, plane, name, rehearsal=False, motion="screen"):
         self.p = plane
         self.name = name
         self.info = DEMOS[name]
         self.rehearsal = rehearsal
+        self.motion = motion
         self.source = 'none'
         self.fallback = False
         self.equation = ''
@@ -44,7 +45,7 @@ class HareDemo:
         self.baseline = None
         self.adapted = False
         self.touch_source = 'presenter'
-        self.note = 'Screen hops; physical hop-in-place is not configured.'
+        self.note = 'Forward jumps on Go2.' if motion == 'forward_jumps' else 'Screen hops; no physical motion.'
         self.cue = self.info['intro']
         self.pending_count = None
 
@@ -52,7 +53,7 @@ class HareDemo:
         return {'name': self.name, 'title': self.info['title'], 'color': self.info['color'],
             'rehearsal': self.rehearsal, 'evidence': self.source, 'fallback_used': self.fallback,
             'equation': self.equation, 'hops': self.hops, 'effect': self.effect,
-            'motion': 'screen', 'note': self.note, 'presenter_cue': self.cue,
+            'motion': self.motion, 'note': self.note, 'presenter_cue': self.cue,
             'adapted': self.adapted, 'touch_source': self.touch_source}
 
     def say(self, text, after, face='Watching'):
@@ -113,7 +114,7 @@ class HareDemo:
         self.next_hop = self.p.clock()
         self.p.phase, self.p.face = 'hopping', 'Go'
 
-    def tick(self):
+    async def tick(self):
         p = self.p
         if p.speech:
             if self.rehearsal and p.clock() - p._speech_at >= min(5, max(1.5, len(p.message) / 24)):
@@ -121,11 +122,18 @@ class HareDemo:
             return
         if p.phase == 'hopping' and p.clock() >= self.next_hop:
             if self.hops_left:
+                if self.motion == 'forward_jumps':
+                    def guard(**kwargs):
+                        p.check(p.session_id)
+                        if not p.vision.camera_fresh():
+                            raise HTTPException(409, 'Camera stale; jump canceled')
+                    await p.demo_motion(guard)
+                    guard()
                 self.hops += 1
                 self.hops_left -= 1
                 self.effect = {'id': secrets.token_hex(6), 'kind': 'hop'}
                 self.next_hop = p.clock() + self.HOP_SECONDS
-                p.log('screen hop', f'Hop {self.hops}; no robot motion commanded')
+                p.log('robot jump' if self.motion == 'forward_jumps' else 'screen hop', f'Hop {self.hops}; ' + ('command completed; verify physical motion' if self.motion == 'forward_jumps' else 'no robot motion commanded'))
             else:
                 p.phase = self.hop_after
                 if p.phase == 'complete':
@@ -139,8 +147,8 @@ class HareDemo:
         elif p.phase == 'catch_wait' and p.clock() - p._speech_at >= 3:
             self.say('I hopped. Count my hops!', 'count_three', 'Thinking')
         elif self.name == 'run_play' and not self.adapted and p.phase in ('observing', 'waiting_blocks'):
-            if p.clock() - self.progress_at >= self.STALL_SECONDS:
-                self.adapt('No block-count progress for ten seconds')
+            if self.source != 'none' and p.clock() - self.observed_at <= 20 and p.clock() - self.progress_at >= self.STALL_SECONDS:
+                self.adapt('No block-count progress for ten seconds (' + self.source + ' evidence)')
 
     def adapt(self, reason):
         if self.name != 'run_play' or self.adapted or self.p.phase not in ('observing', 'waiting_blocks'):

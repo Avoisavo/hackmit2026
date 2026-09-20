@@ -1,4 +1,7 @@
-# Buddy: one server and one control plane
+# HARE: one server and one control plane
+
+The three current demos are documented in [HARE_DEMO.md](HARE_DEMO.md).
+The original blocks activity remains available in the collapsed activity section.
 
 This isolated integration combines the Go2 backend, built-in camera counting,
 Deepgram microphone input, ElevenLabs speech output, and HB's Twinkle face.
@@ -7,21 +10,21 @@ Whammo 2.0 speaker output first, then its microphone input. One FastAPI/Uvicorn 
 clients. They do not need another Next.js or face backend. Parent video and
 Insta360 are intentionally outside this version.
 
-The original checkout at `/Users/derek/Developer/hackmit2026` is unchanged. This
-copy is on `integration/control-plane` in `/Users/derek/Developer/hackmit2026-control-plane`.
-This is a separate permanent checkout with no shared Git object storage.
+The control plane now lives on the `dog` branch in
+`/Users/derek/Developer/hackmit2026`. The former integration checkout is not needed
+to run it.
 
 ## Start locally
 
 ```sh
-~/Developer/hackmit2026-control-plane/robot/start-control-plane.sh
+~/Developer/hackmit2026/robot/start-control-plane.sh
 ```
 
 Open **http://127.0.0.1:8020/plane** on this Mac. The original robot controls are
 still at `/controls`; `/` redirects to `/plane`. The independent scene-counting page remains at `/vision`.
 Only one operator page can own the robot control WebSocket.
 
-The launcher loads `/Users/derek/Developer/hackmit2026-control-plane/.env.local`.
+The launcher loads `/Users/derek/Developer/hackmit2026/.env.local`.
 This file is ignored by Git and readable only by your macOS account. The active
 Python server reads `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, and
 `ELEVENLABS_VOICE_ID`. It also reads `OPENAI_API_KEY` when provided; that key is
@@ -82,8 +85,8 @@ credentials for their narrow role; share them only with the intended device.
 
 The phone microphone requires a **trusted HTTPS origin**. Plain `http://<Mac-IP>`
 does not provide a usable browser microphone. Localhost is suitable for a local
-microphone test on the Mac, including the DJI microphone. Sound plays through
-the selected Mac output (VISA), or an optionally paired browser speaker player.
+microphone test on the Mac, including the selected microphone. Sound plays through
+the selected Mac output (Whammo), or an optionally paired browser speaker player.
 
 Use a certificate trusted by the phone and board, covering the LAN hostname/IP
 and `localhost`. Provide its certificate and private-key files to this same
@@ -92,7 +95,7 @@ Uvicorn server. For example, replace the address and file paths here:
 ```sh
 export CONTROL_HOSTS='192.168.1.40'
 ~/dimensional-applications/.venv/bin/python -m uvicorn app:app \
-  --app-dir /Users/derek/Developer/hackmit2026-control-plane/robot \
+  --app-dir /Users/derek/Developer/hackmit2026/robot \
   --host 0.0.0.0 --port 8020 --no-proxy-headers \
   --ssl-certfile /absolute/path/buddy-cert.pem \
   --ssl-keyfile /absolute/path/buddy-key.pem
@@ -138,7 +141,7 @@ stop an activity with a clear “stop”, “please stop”, “goodbye”, or �
 Camera observations received during speech are retained and revalidated when
 playback ends. Browser playback advances after its audio source reports that it
 ended, not when the TTS HTTP request returns. This does not verify physical
-audibility; confirm the tone plays through VISA before
+audibility; confirm the tone plays through Whammo before
 starting the activity. Duplicate speech/transcript events cannot repeat a gesture or
 advance a different question. Provider errors stop the activity instead of
 pretending a line was spoken. Devices poll serialized state every 300 ms; no
@@ -177,7 +180,7 @@ were performed during implementation.
 ## Offline validation
 
 ```sh
-cd /Users/derek/Developer/hackmit2026-control-plane
+cd /Users/derek/Developer/hackmit2026
 PYTHONDONTWRITEBYTECODE=1 ~/dimensional-applications/.venv/bin/python -m unittest discover -s robot/tests
 node --test robot/tests/*.test.cjs
 ```
@@ -185,7 +188,7 @@ node --test robot/tests/*.test.cjs
 Tests use fake providers, audio buffers and robot/camera transports. They exercise
 the exact wrong-then-correct sequence, retained camera updates, scoped credentials,
 stale data, concurrent ownership, failed speech, canceled audio, and late replies.
-The physical Go2, DJI microphone, VISA speaker, display, and real provider
+The physical Go2, selected microphone, Whammo speaker, display, and real provider
 credentials still need a supervised end-to-end run.
 
 ## Tests and AI movement map
@@ -198,7 +201,7 @@ tests require a fresh camera, focused operator tab, and valid current control ID
 and STOP epoch. Each ends disarmed. STOP / focus loss invalidates pending tests,
 clears browser playback, and rejects late speech generation. The audio tests
 require a focused operator tab but work with the robot disconnected. The page
-header **GO2 AIR + AUDIO · V3** identifies this audio update.
+header **DEMOS · V4** identifies the HARE update.
 
 The **Movement tool map** is generated from the exact `ai_agent.TOOLS` schemas
 used in OpenAI requests. **Download tool schemas** exports the schemas, dispatch
@@ -209,5 +212,5 @@ Implementation references:
 - [Driver audio streaming example](https://github.com/legion1581/unitree_webrtc_connect/blob/master/examples/go2/audio/internet_radio/stream_radio.py)
 - [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling)
 
-These are offline-verified integration paths. Audible VISA playback, DJI capture,
+These are offline-verified integration paths. Audible Whammo playback, microphone capture,
 and provider credentials require testing with the connected devices.

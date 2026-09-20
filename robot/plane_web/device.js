@@ -1,4 +1,5 @@
 import {ChildListener} from './deepgram.js';
+import {renderHare} from './hare.js';
 
 // Devices receive snapshots, not replayable commands. Only the current speech
 // ID can be played/acknowledged; STOP invalidates it across every client.
@@ -143,7 +144,10 @@ if (document.body.dataset.role) {
   }
   const client = new DeviceClient(role, key, (text, state) => {
     message.textContent = text;
-    if (face && state && face.name !== state.face) face.setEmote(state.face);
+    if (face && state) {
+      if (face.name !== state.face) face.setEmote(state.face);
+      renderHare(document.querySelector('#hareDisplay'), state.demo);
+    }
     document.querySelector('#deviceStop').disabled = !client.active;
     document.querySelector('#deviceStart').disabled = client.active;
   });

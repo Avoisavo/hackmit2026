@@ -1,4 +1,5 @@
 import {DeviceClient} from './device.js';
+import {renderHare} from './hare.js';
 
 const $ = selector => document.querySelector(selector);
 const token = document.body.dataset.token;
@@ -57,13 +58,20 @@ setInterval(() => {
 
 function render(state) {
   activity = state;
+  renderHare($('#hareDisplay'), state.demo);
+  if (state.demo) $('#presenterCue').textContent = state.demo.presenter_cue;
+  $('#demoNote').textContent = state.demo?.note || '';
+  const io = state.audio_tool;
+  $('#audioToolResult').textContent = io ? `${io.status}: ${io.result ? JSON.stringify(io.result) : 'Ready for a speech or listening tool call.'}` : '';
+  document.querySelectorAll('[data-demo], #toolSpeak, #toolListen').forEach(button => { button.disabled = state.running || state.busy || robot.ai?.busy || !controlReady; });
+  document.querySelectorAll('[data-demo-event], #fallbackApply').forEach(button => { button.disabled = !state.running || !state.demo; });
   if (face.name !== state.face) face.setEmote(state.face || 'Ready');
   $('#activityPhase').textContent = state.phase.replaceAll('_', ' ');
   $('#activityMessage').textContent = state.message;
   $('#goalCount').textContent = state.target;
   $('#seenCount').textContent = state.observed ?? '—';
   $('#startActivity').disabled = starting || state.running || state.busy || robot.ai?.busy || !controlReady;
-  $('#sendAnswer').disabled = !state.running || state.phase !== 'waiting_answer';
+  $('#sendAnswer').disabled = !state.running || !['waiting_answer','waiting_blocks','answer_three','answer_five'].includes(state.phase);
   $('#expression').disabled = state.running;
   $('#expression').value = state.face;
   $('#voiceHealth').textContent = `Speaker ${state.speaker.ready ? 'ready' : 'offline'} · ${state.devices.mic.online ? 'Mic online' : 'Mic offline'}`;
@@ -226,7 +234,7 @@ $('#downloadTools').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 window.addEventListener('keydown', event => {
-  if (event.code === 'Space' && !event.target.closest('input,select,textarea,button')) { event.preventDefault(); halt(true); }
+  if (event.code === 'Space' && !event.target.closest('input,select,textarea')) { event.preventDefault(); halt(true); }
 });
 window.addEventListener('blur', () => halt());
 document.addEventListener('visibilitychange', () => { if (document.hidden) halt(); });
@@ -235,3 +243,36 @@ window.addEventListener('pagehide', () => {
   Object.values(localDevices).forEach(device => device.stop());
 });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
+
+async function demoEvent(event, extra = {}) {
+  if (!activity.running || !activity.demo) return;
+  render(await request('/plane/event', {event, ...extra, session_id: activity.session_id, event_id: crypto.randomUUID()}));
+}
+document.querySelectorAll('[data-demo]').forEach(button => {
+  button.onclick = () => runTest(async () => {
+    const rehearsal = $('#rehearsal').checked;
+    render(await withContext('/plane/start', {demo: button.dataset.demo, rehearsal,
+      motion: rehearsal ? 'screen' : $('#demoMotion').value, clear_space: $('#clearSpace').checked}));
+  });
+});
+document.querySelectorAll('[data-demo-event]').forEach(button => {
+  button.onclick = () => demoEvent(button.dataset.demoEvent).catch(report);
+});
+$('#fallbackApply').onclick = () => demoEvent('count', {count: Number($('#fallbackCount').value)}).catch(report);
+window.addEventListener('keydown', event => {
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input,select,textarea,button')) return;
+  const cue = {KeyF:'count', KeyL:'learner_left', KeyB:'bump', KeyG:'gentle'}[event.code];
+  if (!cue || !activity.running || !activity.demo) return;
+  event.preventDefault();
+  demoEvent(cue, cue === 'count' ? {count: Number($('#fallbackCount').value)} : {}).catch(report);
+});
+for (const [selector, name] of [['#toolSpeak','speak'], ['#toolListen','listen']]) {
+  $(selector).onclick = () => runTest(async () => {
+    const args = name === 'speak' ? {text: $('#toolSpeech').value} : {seconds: 10};
+    render(await withContext('/plane/call', {name, arguments: {...args, reason: 'Presenter selected the audio tool'}, run_id: crypto.randomUUID()}));
+  });
+}
+$('#aiGoalForm').onsubmit = event => {
+  event.preventDefault();
+  runTest(() => withContext('/ai/start', {goal: $('#aiGoal').value, run_id: crypto.randomUUID()}));
+};

@@ -1,5 +1,10 @@
 # Go2 web dashboard
 
+For HARE, use `~/Developer/hackmit2026/robot/start-control-plane.sh` and
+<http://127.0.0.1:8020/plane>. It loads the private environment file.
+[HARE_DEMO.md](HARE_DEMO.md) covers the demo flow. The manual instructions below
+remain available at `/controls` on whichever port you start.
+
 Drive a Unitree Go2 from a browser over the same WebRTC link dimOS uses.
 
 ## Before you connect

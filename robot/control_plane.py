@@ -645,7 +645,7 @@ class ControlPlane:
             elif self.speaker_output == "browser":
                 self._test_playback = asyncio.Event()
                 self.speech = {"id": secrets.token_hex(12), "kind": kind, "status": "queued",
-                    "text": "Test tone" if kind == "tone" else "Hello! I am Buddy. My voice is playing through your selected speaker. Let's build three blocks together!"}
+                    "text": "Test tone" if kind == "tone" else "Hello! I am HARE. My voice is playing through your selected speaker. Let's build three blocks together!"}
                 deadline = self.clock() + self.SPEECH_TIMEOUT
                 while not self._test_playback.is_set():
                     check()
@@ -657,7 +657,7 @@ class ControlPlane:
                 check()
                 message = "Speaker finished the test. If silent, check your Mac sound output and browser tab mute setting."
             else:
-                audio = None if kind == "tone" else await asyncio.to_thread(self.audio.speak, "Hello! I am Buddy. My voice is coming from the robot's built-in speaker. Let's build three blocks together!")
+                audio = None if kind == "tone" else await asyncio.to_thread(self.audio.speak, "Hello! I am HARE. My voice is coming from the robot's built-in speaker. Let's build three blocks together!")
                 check()
                 await self.speaker.play(audio, check, tone=kind == "tone")
                 check()

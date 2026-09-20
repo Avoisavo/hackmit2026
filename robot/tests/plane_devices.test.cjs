@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../plane_web/device.js'), 'utf8')
-  .replace(/^import .*;\n/, '').replace('export class DeviceClient', 'class DeviceClient');
+  .replace(/^import .*;\n/gm, '').replace('export class DeviceClient', 'class DeviceClient');
 
 function client() {
   const messages = [], sources = [], requests = [], timers = new Map();

@@ -7,6 +7,8 @@ The catalogue is authenticated with `X-Control-Token` like the other control API
 
 | AI tool | Arguments (all required) | Effect |
 | --- | --- | --- |
+| `speak` | `text`: 1–400 printable characters; `reason`: text | ElevenLabs speech through the paired speaker; waits for actual browser playback completion. |
+| `listen` | `seconds`: 1–20; `reason`: text | One final Deepgram transcript or a timeout; never listens while speaking. |
 | `move_robot` | `direction`: `forward`, `turn_left`, `turn_right`; `seconds`: 0.1–1; `speed`: 0.1–0.3; `reason`: text | Prepare stance, apply a bounded joystick input, then stop. Speed is a joystick fraction, not metres per second. |
 | `set_posture` | `posture`: `stand`, `balance`, `lie`; `reason`: text | Use the existing posture controller; finish disarmed. |
 | `perform_trick` | `action`: `hello`, `stretch`, `heart`, `content`, `scrape`, `wiggle_hips`, `sit`, `rise_sit`, `dance1`, `dance2`; `reason`: text | Run one supported action, wait its configured duration, finish disarmed. Firmware can refuse an action or mode. |
@@ -14,8 +16,9 @@ The catalogue is authenticated with `X-Control-Token` like the other control API
 | `finish` | `reason`: text | End the camera-agent run and stop. |
 
 `reason` is 1–240 printable characters. No extra arguments are accepted. The AI
-receives only these five tools; flips, jumps, held poses and mode changes remain
-manual controls. Backward and sideways motion remain on the manual joystick;
+receives these seven tools. Flips, held poses and mode changes remain manual.
+The HARE presenter demos separately offer the tested forward jump with an explicit
+clear-path selection; the camera AI does not receive a jumping tool. Backward and sideways motion remain on the manual joystick;
 the camera agent cannot see a clear path behind or beside the robot.
 
 ## Dispatch a tool
@@ -77,9 +80,9 @@ single-tool dispatch endpoint itself makes no OpenAI API request.
 | `GET /api/ai/tools` | — | Schemas, limits, movement catalogue, component map. |
 | `POST /api/ai/call` | Tool call plus control context shown above | Execute one guarded robot tool asynchronously. |
 | `GET /api/ai/status` | — | Current tool/model run and results. |
-| `POST /api/plane/test` | `{"kind":"tone", "control_id":"…", "control_epoch":12}` | A 0.8 s tone through the enabled browser speaker (Mac → VISA), no API key or robot connection. |
+| `POST /api/plane/test` | `{"kind":"tone", "control_id":"…", "control_epoch":12}` | A 0.8 s tone through the enabled browser speaker (Mac → selected speaker), no API key or robot connection. |
 | `POST /api/plane/test` | `{"kind":"voice", "control_id":"…", "control_epoch":12}` | Fixed ElevenLabs sentence through the enabled browser speaker. Needs key and voice ID. |
-| `POST /api/plane/test` | `{"kind":"microphone", "control_id":"…", "control_epoch":12}` | Listen on the enabled mic (DJI → Mac) for 20 s; show Deepgram transcripts without grading or movement. |
+| `POST /api/plane/test` | `{"kind":"microphone", "control_id":"…", "control_epoch":12}` | Listen on the enabled mic (selected microphone → Mac) for 20 s; show Deepgram transcripts without grading or movement. |
 | `GET /api/plane/status` | — | Activity, current test, speaker readiness, device and credential readiness (no secrets). |
 | `POST /api/plane/face` | `{"name":"Celebrate"}` | Update preview and paired Arduino screen while activity is idle. |
 | `POST /api/vision/round` | `{"target_object":"toy blocks", "target_count":3}` | Set the category and count for a standalone camera test. |
@@ -95,10 +98,56 @@ Manual posture/action endpoints and mode compatibility are listed in the JSON
 tool dispatcher for AI movement: the older manual trick endpoints may schedule
 automatic recovery and rearm. Never substitute them for a rejected AI tool.
 
-Select DJI as the Mac's sound input and VISA as its output, then click **Use this
+Select the desired microphone and Whammo as the Mac's sound output, then click **Use this
 microphone** and **Use this computer’s speaker** in the dashboard. The Go2 Air
 installation plays audio through that browser speaker. Tests use the same scoped
 device session and playback acknowledgements as the activity. They work without
 a robot connection but require current operator control context. STOP cancels
 browser playback and invalidates pending speech. Playback completion does not
-prove audibility; confirm the tone through VISA before starting the lesson.
+prove audibility; confirm the tone through Whammo before starting the lesson.
+
+## Audio tools without a robot connection
+
+`POST /api/plane/call` accepts the same `name`, `arguments`, `run_id`,
+`control_id`, and `control_epoch` envelope, but only for `speak` and `listen`.
+It requires the live focused operator WebSocket, without requiring a Go2 camera.
+The autonomous camera-agent loop executes the same functions through
+`/api/ai/start`; that loop and `/api/ai/call` retain camera and robot guards.
+
+```json
+{
+  "name": "speak",
+  "arguments": {"text": "Put three blue blocks on the mat.", "reason": "Introduce the block mission"},
+  "run_id": "unique_audio_call_0001",
+  "control_id": "<current operator WebSocket owner>",
+  "control_epoch": 12
+}
+```
+
+For a microphone call, use `"name":"listen"` and
+`"arguments":{"seconds":10,"reason":"Hear one learner answer"}`.
+Poll `/api/plane/status` → `audio_tool` for the matching `run_id` and a terminal
+`status` (`complete` or `stopped`). Results are `{played:true,
+audibility_verified:false,text:...}` or `{heard:true,transcript:...}`; a timeout
+returns `{heard:false,transcript:"",timed_out:true}`. Forward that result as the
+model's `function_call_output`. Neither a transcript nor playback completion is
+proof of a physical block placement. No recording is stored.
+
+Duplicate accepted run IDs do not repeat audio. The duplicate response includes
+`requested_run_id`; the current `audio_tool` may belong to a newer call, so match
+IDs before consuming a result. Busy operations cannot overlap. STOP invalidates
+queued audio and listening windows; a spoken stop also cancels the owning AI run.
+
+## HARE demo coordinator
+
+`POST /api/plane/start` additionally accepts `demo`: `count_check`, `run_play`,
+`soft_hands`, `close`, or `backup`; `rehearsal`: boolean; and `motion`: `screen`
+or `forward_jumps`, plus the existing control context. Forward jumps also require
+`clear_space:true`. Caption rehearsal only permits screen motion.
+
+`POST /api/plane/event` accepts `session_id`, unique `event_id`, and `event`:
+`count` (with integer `count`), `learner_left`, `bump`, or `gentle`.
+These are operator-only presenter cues, not model tools. They cannot override
+STOP, substitute for camera evidence, or skip a step. See [HARE_DEMO.md](HARE_DEMO.md).
+
+Function schema reference: [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling).
