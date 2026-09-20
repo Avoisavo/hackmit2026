@@ -183,15 +183,29 @@
   };
   RabbitFace.prototype._furBackground = function (w, h) {
     if (this._fur && this._fur.width === w && this._fur.height === h) return this._fur;
+    if (this._furFailed) return null;   // do not retry a build that already failed
     var canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
     var c = canvas.getContext('2d');
+    if (!c) { this._furFailed = true; return null; }
+    try {
+      return this._paintFur(canvas, c, w, h);
+    } catch (e) {
+      // A small panel can refuse an offscreen canvas this large. The solid base
+      // colour in _draw still shows, so the face stays readable.
+      this._furFailed = true;
+      return null;
+    }
+  };
+  RabbitFace.prototype._paintFur = function (canvas, c, w, h) {
     // Cache the fur once per display size; animation does not redraw thousands of hairs.
     c.fillStyle = gradient(c, w * .38, h * .26, Math.max(w, h) * .85,
       [[0, '#fff9ed'], [.38, '#f2e7df'], [.72, '#d8cdd0'], [1, '#aaa8b8']]);
     c.fillRect(0, 0, w, h);
     var seed = 7319;
     function random() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
-    var density = Math.min(28000, Math.round(w * h / 35));
+    // Capped for the robot panel's GPU. Each hair is a stroked curve, and the
+    // old 28000 cap took long enough on the board that the screen sat blank.
+    var density = Math.min(12000, Math.round(w * h / 35));
     var scale = Math.max(.5, Math.min(w / 1000, h / 600));
     c.lineCap = 'round';
     for (var i = 0; i < density; i++) {
@@ -213,7 +227,22 @@
     var w = Math.max(1, Math.round((canvas.clientWidth || canvas.width) * dpr));
     var h = Math.max(1, Math.round((canvas.clientHeight || canvas.height) * dpr));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(this._furBackground(w, h), 0, 0);
+    // Reset every piece of canvas state before the frame, then wipe. A helper
+    // that leaves globalAlpha or a composite mode behind makes the background
+    // paint semi-transparent, and the previous face shows through the new one.
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.globalAlpha = 1;
+    c.globalCompositeOperation = 'source-over';
+    c.shadowBlur = 0; c.shadowColor = 'rgba(0,0,0,0)';
+    if ('filter' in c) c.filter = 'none';
+    c.clearRect(0, 0, w, h);
+    // Paint a solid warm base FIRST. The fur is a cached offscreen canvas, and
+    // building it can fail on a small panel's GPU. Without this base the panel
+    // falls through to the dark page background and the rabbit looks black.
+    c.fillStyle = '#f2e7df';
+    c.fillRect(0, 0, w, h);
+    var fur = this._furBackground(w, h);
+    if (fur) c.drawImage(fur, 0, 0);
     var k = Math.min(w / 1000, h / 600), f = this._features();
     var living = this.idleOn && !this.reducedMotion;
     var tempo = { neutral: 1.7, happy: 3.2, excited: 7, curious: 2.2, sad: .9, sleepy: .65, surprised: 4, angry: 8, love: 2.4, boot: 1.2 }[this.name];
